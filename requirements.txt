@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+pydantic
+iqoptionapi @ git+https://github.com/iqoptionapi/iqoptionapi.git
