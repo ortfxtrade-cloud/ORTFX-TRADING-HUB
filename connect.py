@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("qt.connect")
 
 _sessions: Dict[str, "IQSession"] = {}
 _lock = threading.Lock()
+
+DURATION_WHITELIST = {1, 2, 3, 5, 10, 15, 30, 60}
 
 
 @dataclass
@@ -33,20 +35,24 @@ class IQSession:
             return False
         try:
             return bool(self.api.check_connect())
-        except Exception:
+        except Exception as e:
+            logger.debug("is_alive check failed for %s: %s", self.session_id, e)
             return False
 
 
 def _import_iq_option():
+    from iqoptionapi.stable_api import IQ_Option  # noqa: WPS433
+    return IQ_Option
+
+
+def _safe_logout(sess: "IQSession") -> None:
     try:
-        from iqoptionapi.stable_api import IQ_Option
-        return IQ_Option
-    except ImportError as e:
-        raise ImportError(
-            "iqoptionapi is not installed. Run:\n"
-            "  pip install git+https://github.com/williansandi/iqoptionapi-2025-Atualizada-.git\n"
-            f"Original error: {e}"
-        ) from e
+        if sess.api is not None and hasattr(sess.api, "logout"):
+            sess.api.logout()
+    except Exception as e:
+        logger.debug("logout cleanup failed for %s: %s", sess.session_id, e)
+    finally:
+        sess.api = None
 
 
 def connect_iq(email: str, password: str, mode: str = "demo") -> Tuple[bool, Dict[str, Any]]:
@@ -59,7 +65,14 @@ def connect_iq(email: str, password: str, mode: str = "demo") -> Tuple[bool, Dic
     if not email or not password:
         return False, {"status": "error", "message": "Email and password are required"}
 
-    IQ_Option = _import_iq_option()
+    try:
+        IQ_Option = _import_iq_option()
+    except ImportError as e:
+        logger.exception("iqoptionapi import failed")
+        return False, {
+            "status": "error",
+            "message": f"iqoptionapi not installed: {e}",
+        }
 
     try:
         api = IQ_Option(email, password)
@@ -102,7 +115,7 @@ def connect_iq(email: str, password: str, mode: str = "demo") -> Tuple[bool, Dic
     except Exception:
         pass
 
-    session_id = f"iq_{uuid.uuid4().hex[:16]}_{secrets.token_hex(4)}"
+    session_id = f"iq_{secrets.token_urlsafe(18)}"
 
     sess = IQSession(
         session_id=session_id,
@@ -115,10 +128,13 @@ def connect_iq(email: str, password: str, mode: str = "demo") -> Tuple[bool, Dic
     )
 
     with _lock:
-        for sid, old in list(_sessions.items()):
-            if old.email == email:
-                del _sessions[sid]
+        old = [s for s in _sessions.values() if s.email == email]
+        for s in old:
+            _sessions.pop(s.session_id, None)
         _sessions[session_id] = sess
+
+    for s in old:
+        _safe_logout(s)
 
     logger.info("IQ connected: %s mode=%s balance=%.2f", email, mode, balance)
 
@@ -139,22 +155,23 @@ def disconnect_iq(session_id: str) -> Tuple[bool, str]:
         sess = _sessions.pop(session_id, None)
     if not sess:
         return False, "Session not found"
-    try:
-        if sess.api is not None:
-            try:
-                if hasattr(sess.api, "logout"):
-                    sess.api.logout()
-            except Exception:
-                pass
-            sess.api = None
-    except Exception as e:
-        logger.warning("disconnect cleanup: %s", e)
+    _safe_logout(sess)
     return True, "Disconnected"
 
 
 def get_session(session_id: str) -> Optional[IQSession]:
     with _lock:
         return _sessions.get(session_id)
+
+
+def get_first_session() -> Optional[IQSession]:
+    """Return the first live session, or None."""
+    with _lock:
+        sessions = list(_sessions.values())
+    for s in sessions:
+        if s.is_alive():
+            return s
+    return sessions[0] if sessions else None
 
 
 def refresh_balance(session_id: str) -> Optional[float]:
@@ -165,7 +182,8 @@ def refresh_balance(session_id: str) -> Optional[float]:
         bal = float(sess.api.get_balance() or 0)
         sess.balance = bal
         return bal
-    except Exception:
+    except Exception as e:
+        logger.warning("refresh_balance failed for %s: %s", session_id, e)
         return None
 
 
@@ -180,23 +198,44 @@ def place_binary_order(
     if not sess or not sess.is_alive():
         return False, {"message": "Session not connected"}
 
-    active = active.replace("/", "").replace(" ", "").upper()
-    direction = direction.lower()
-    if direction in ("buy", "up", "call"):
-        direction = "call"
-    elif direction in ("sell", "down", "put"):
-        direction = "put"
+    active = re.sub(r"[^A-Z0-9]", "", (active or "").upper())
+    if not active:
+        return False, {"message": "active is required"}
+
+    d = (direction or "").lower()
+    if d in ("buy", "up", "call"):
+        d = "call"
+    elif d in ("sell", "down", "put"):
+        d = "put"
     else:
         return False, {"message": "direction must be BUY/SELL or call/put"}
 
     try:
-        ok, order_id = sess.api.buy(amount, active, direction, duration_min)
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return False, {"message": "amount must be numeric"}
+    if amount <= 0:
+        return False, {"message": "amount must be positive"}
+
+    try:
+        duration_min = int(duration_min)
+    except (TypeError, ValueError):
+        return False, {"message": "duration must be an integer"}
+
+    if duration_min not in DURATION_WHITELIST:
+        return False, {
+            "message": f"Unsupported duration: {duration_min} "
+            f"(allowed: {sorted(DURATION_WHITELIST)})"
+        }
+
+    try:
+        ok, order_id = sess.api.buy(amount, active, d, duration_min)
         if not ok:
             return False, {"message": f"Order rejected: {order_id}"}
         return True, {
             "order_id": str(order_id),
             "active": active,
-            "direction": direction,
+            "direction": d,
             "amount": amount,
             "duration": duration_min,
         }
@@ -205,16 +244,17 @@ def place_binary_order(
         return False, {"message": str(e)}
 
 
-def list_active_sessions() -> list:
+def list_active_sessions() -> List[Dict[str, Any]]:
     with _lock:
-        return [
-            {
-                "session_id": s.session_id,
-                "email": s.email,
-                "mode": s.mode,
-                "balance": s.balance,
-                "currency": s.currency,
-                "alive": s.is_alive(),
-            }
-            for s in _sessions.values()
-        ]
+        sessions = list(_sessions.values())
+    return [
+        {
+            "session_id": s.session_id,
+            "email": s.email,
+            "mode": s.mode,
+            "balance": s.balance,
+            "currency": s.currency,
+            "alive": s.is_alive(),
+        }
+        for s in sessions
+    ]
