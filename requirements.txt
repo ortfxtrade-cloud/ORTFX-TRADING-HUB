@@ -1,10 +1,10 @@
 fastapi
 uvicorn[standard]
-sqlalchemy
 pydantic
-pydantic-settings
+SQLAlchemy
 python-dotenv
-python-multipart
-git+https://github.com/williansandi/iqoptionapi-2025-Atualizada-.git
-websocket-client
+yfinance
+pandas
 requests
+websocket-client
+iqoptionapi @ git+https://github.com/williansandi/iqoptionapi-2025-Atualizada-.git
