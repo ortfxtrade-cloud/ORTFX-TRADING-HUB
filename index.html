@@ -320,16 +320,12 @@
   <div class="modal-panel">
     <h2 class="text-lg font-semibold mb-3">IQ Option Account</h2>
     <div id="accDisconnected" class="space-y-3">
-      <div class="text-[11px] text-gray-400 bg-[#0e141d] border border-[#1f2a3a] rounded-xl p-2">
-        If IQ_EMAIL / IQ_PASSWORD are set on the server, the app auto-connects.
-        Otherwise enter credentials below.
-      </div>
       <div>
-        <label class="text-[11px] text-gray-400">Email (optional)</label>
+        <label class="text-[11px] text-gray-400">Email</label>
         <input id="iqEmail" type="email" class="w-full input-box rounded-xl px-3 py-2.5 text-sm outline-none mt-1" placeholder="you@example.com">
       </div>
       <div>
-        <label class="text-[11px] text-gray-400">Password (optional)</label>
+        <label class="text-[11px] text-gray-400">Password</label>
         <input id="iqPassword" type="password" class="w-full input-box rounded-xl px-3 py-2.5 text-sm outline-none mt-1" placeholder="••••••••">
       </div>
       <div>
@@ -420,7 +416,6 @@
 (() => {
 "use strict";
 
-// ── Config ────────────────────────────────────────────────────────────────
 const cfg = {
   backend: localStorage.getItem("qt_backend") || "",
   apiKey:  localStorage.getItem("qt_api_key") || "",
@@ -474,7 +469,6 @@ async function api(path, opts = {}) {
   return data;
 }
 
-// ── Screens & Nav ────────────────────────────────────────────────────────
 function switchScreen(name) {
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
   const el = $("screen-" + name);
@@ -508,7 +502,6 @@ function closeModal(name) {
 window.openModal = openModal;
 window.closeModal = closeModal;
 
-// ── Chart ────────────────────────────────────────────────────────────────
 let chart, candleSeries;
 
 function initChart() {
@@ -583,7 +576,7 @@ function updateIndBadge() {
 
 async function refetchEma(period) {
   try {
-    const r = await api(`/api/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=200`);
+    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=200`);
     return ema((r.candles || []), period);
   } catch { return []; }
 }
@@ -603,7 +596,7 @@ function setChartStatus(text) { const el = $("chartStatus"); if (el) el.textCont
 async function loadCandles() {
   setChartStatus("loading…");
   try {
-    const r = await api(`/api/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=200`);
+    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=200`);
     const candles = (r.candles || []).map(c => ({
       time: c.time, open: +c.open, high: +c.high, low: +c.low, close: +c.close,
     }));
@@ -625,7 +618,7 @@ async function loadCandles() {
 
 async function pollCandles() {
   try {
-    const r = await api(`/api/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=5`);
+    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=5`);
     const rows = r.candles || [];
     if (rows.length) {
       const last = rows[rows.length - 1];
@@ -658,7 +651,6 @@ function renderSentiment(bullPct) {
   $("bearPct").textContent = bear + "%";
 }
 
-// ── Pair & TF pickers ───────────────────────────────────────────────────
 const PAIRS = [
   "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","NZD/USD",
   "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CAD","AUD/JPY",
@@ -696,7 +688,6 @@ function selectTf(t) {
 }
 window.selectTf = selectTf;
 
-// ── IQ connect / disconnect ─────────────────────────────────────────────
 function setMode(m) {
   cfg.mode = m;
   localStorage.setItem("qt_mode", m);
@@ -718,10 +709,13 @@ async function connectIQ() {
     state.balance = r.balance;
     state.currency = r.currency || "USD";
     state.accountEmail = r.email || email;
+    localStorage.setItem("qt_session_id", r.session_id);
+    localStorage.setItem("qt_session_email", r.email || email || "");
     renderBalance();
     renderAccountModal();
     renderProfile();
     toast("Connected (" + (r.account_type || cfg.mode) + ")", "ok");
+    loadCandles();
   } catch (e) {
     toast("Connect failed: " + e.message, "err");
   }
@@ -736,28 +730,58 @@ async function tryAutoConnect() {
       state.balance = r.balance;
       state.currency = r.currency || "USD";
       state.accountEmail = r.email;
+      localStorage.setItem("qt_session_id", r.session_id);
+      localStorage.setItem("qt_session_email", r.email || "");
       renderBalance();
       renderAccountModal();
       renderProfile();
-      toast("Connected to IQ (auto)", "ok");
+      toast("Connected to IQ", "ok");
+      return;
     }
-  } catch {}
+  } catch (e) {
+    console.warn("auto-connect via backend failed:", e.message);
+  }
+
+  const savedId = localStorage.getItem("qt_session_id");
+  const savedEmail = localStorage.getItem("qt_session_email");
+  if (savedId) {
+    try {
+      const r = await api(`/api/iq/balance?session_id=${encodeURIComponent(savedId)}`);
+      state.sessionId = savedId;
+      state.balance = r.balance;
+      state.currency = r.currency || "USD";
+      state.accountEmail = savedEmail || null;
+      renderBalance();
+      renderAccountModal();
+      renderProfile();
+      toast("Reconnected to IQ", "ok");
+      return;
+    } catch (e) {
+      localStorage.removeItem("qt_session_id");
+      localStorage.removeItem("qt_session_email");
+    }
+  }
+
+  renderBalance();
+  renderAccountModal();
+  renderProfile();
 }
 
 async function disconnectIQ() {
-  if (!state.sessionId) return;
-  try {
-    await api("/api/iq/disconnect", { method: "POST", body: JSON.stringify({ session_id: state.sessionId }) });
-    toast("Disconnected", "ok");
-  } catch (e) { toast("Disconnect: " + e.message, "err"); }
-  finally {
-    state.sessionId = null;
-    state.balance = 0;
-    state.accountEmail = null;
-    renderBalance();
-    renderAccountModal();
-    renderProfile();
+  const id = state.sessionId;
+  state.sessionId = null;
+  state.balance = 0;
+  state.accountEmail = null;
+  localStorage.removeItem("qt_session_id");
+  localStorage.removeItem("qt_session_email");
+  renderBalance();
+  renderAccountModal();
+  renderProfile();
+  if (id) {
+    try { await api("/api/iq/disconnect", { method: "POST", body: JSON.stringify({ session_id: id }) }); }
+    catch (e) { console.warn(e.message); }
   }
+  toast("Disconnected", "ok");
 }
 window.disconnectIQ = disconnectIQ;
 
@@ -796,7 +820,6 @@ function renderProfile() {
   $("profileSession").textContent = state.sessionId || "—";
 }
 
-// ── Trade panel ─────────────────────────────────────────────────────────
 function adjustTime(d) { const el = $("tradeTime"); el.value = Math.max(1, Math.min(60, (+el.value || 1) + d)); }
 function adjustAmount(d) { const el = $("tradeAmount"); el.value = Math.max(1, (+el.value || 1) + d); }
 function setTimePreset(m) { $("tradeTime").value = m; }
@@ -834,7 +857,6 @@ async function placeTrade(dir) {
 }
 window.placeTrade = placeTrade;
 
-// ── Trades view ─────────────────────────────────────────────────────────
 function switchTradeTab(which) {
   $("tab-opened").className = which === "opened" ? "tab-active flex-1 py-2.5 rounded-xl text-sm font-medium border" : "tab-inactive flex-1 py-2.5 rounded-xl text-sm font-medium border";
   $("tab-closed").className = which === "closed" ? "tab-active flex-1 py-2.5 rounded-xl text-sm font-medium border" : "tab-inactive flex-1 py-2.5 rounded-xl text-sm font-medium border";
@@ -946,7 +968,6 @@ function renderTradeRow(t) {
   `;
 }
 
-// ── Signals ─────────────────────────────────────────────────────────────
 async function loadSignals() {
   try {
     const r = await api("/api/signals?status=pending&limit=50");
@@ -1055,7 +1076,6 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 }
 
-// ── Settings ────────────────────────────────────────────────────────────
 function saveSettings() {
   const url = $("setBackendUrl").value.trim();
   const key = $("setApiKey").value.trim();
@@ -1068,14 +1088,13 @@ function saveSettings() {
 }
 window.saveSettings = saveSettings;
 
-// ── Boot ────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   $("currentPair").textContent = cfg.pair;
   $("tfBadge").textContent = cfg.tf;
   setMode(cfg.mode);
   initChart();
-  await loadCandles();
   await tryAutoConnect();
+  await loadCandles();
   await loadSignals();
   await loadTrades();
   state.signalsTimer = setInterval(loadSignals, 10000);
