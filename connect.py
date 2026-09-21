@@ -1,19 +1,4 @@
-"""
-IQ Option connection helpers.
-
-Uses the community `iqoptionapi` library (unofficial).
-Install with:
-  pip install git+https://github.com/williansandi/iqoptionapi-2025-Atualizada-.git
-  # or older:
-  # pip install git+https://github.com/iqoptionapi/iqoptionapi.git
-
-IMPORTANT
----------
-- There is NO official public IQ Option API.
-- Always test on PRACTICE (demo) first.
-- Automating real accounts can violate ToS and risk bans.
-- Credentials should never be logged or committed.
-"""
+"""IQ Option connection helpers."""
 
 from __future__ import annotations
 
@@ -27,10 +12,6 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("qt.connect")
 
-# ---------------------------------------------------------------------------
-# In-memory session store (process lifetime)
-# session_id -> IQSession
-# ---------------------------------------------------------------------------
 _sessions: Dict[str, "IQSession"] = {}
 _lock = threading.Lock()
 
@@ -39,8 +20,8 @@ _lock = threading.Lock()
 class IQSession:
     session_id: str
     email: str
-    mode: str  # demo | real
-    api: Any = None  # IQ_Option instance
+    mode: str
+    api: Any = None
     balance: float = 0.0
     currency: str = "USD"
     account_type: str = "PRACTICE"
@@ -57,9 +38,8 @@ class IQSession:
 
 
 def _import_iq_option():
-    """Lazy import so the rest of the app can start even if lib is missing."""
     try:
-        from iqoptionapi.stable_api import IQ_Option  # type: ignore
+        from iqoptionapi.stable_api import IQ_Option
         return IQ_Option
     except ImportError as e:
         raise ImportError(
@@ -69,21 +49,7 @@ def _import_iq_option():
         ) from e
 
 
-def connect_iq(
-    email: str,
-    password: str,
-    mode: str = "demo",
-) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Connect to IQ Option and return a session payload matching the frontend.
-
-    Returns:
-        (success, payload)
-        payload keys on success:
-          status, session_id, balance, currency, account_type, message
-        on failure:
-          status, message
-    """
+def connect_iq(email: str, password: str, mode: str = "demo") -> Tuple[bool, Dict[str, Any]]:
     email = (email or "").strip().lower()
     password = password or ""
     mode = (mode or "demo").lower()
@@ -106,21 +72,19 @@ def connect_iq(
         msg = reason
         if isinstance(reason, dict):
             msg = reason.get("message") or reason.get("code") or str(reason)
-        if reason == "2FA" or (isinstance(msg, str) and "2FA" in msg.upper()):
+        if reason == "2FA" or (isinstance(msg, str) and "2FA" in str(msg).upper()):
             return False, {
                 "status": "error",
-                "message": "Two-factor authentication required. Disable 2FA or use connect_2fa flow.",
+                "message": "Two-factor authentication required. Disable 2FA or use connect_2fa.",
             }
         return False, {"status": "error", "message": str(msg) or "Invalid credentials"}
 
-    # Switch balance type
     balance_type = "PRACTICE" if mode == "demo" else "REAL"
     try:
         api.change_balance(balance_type)
     except Exception as e:
         logger.warning("change_balance failed: %s", e)
 
-    # Read balance
     balance = 0.0
     currency = "USD"
     try:
@@ -151,14 +115,8 @@ def connect_iq(
     )
 
     with _lock:
-        # Drop any previous session for same email
         for sid, old in list(_sessions.items()):
             if old.email == email:
-                try:
-                    if old.api and old.is_alive():
-                        pass
-                except Exception:
-                    pass
                 del _sessions[sid]
         _sessions[session_id] = sess
 
@@ -177,7 +135,6 @@ def connect_iq(
 
 
 def disconnect_iq(session_id: str) -> Tuple[bool, str]:
-    """Remove session and try to clean up."""
     with _lock:
         sess = _sessions.pop(session_id, None)
     if not sess:
@@ -219,14 +176,6 @@ def place_binary_order(
     amount: float,
     duration_min: int = 1,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """
-    Place a binary options order on IQ Option.
-
-    active: e.g. "EURUSD" (no slash)
-    direction: "call" / "put"  (BUY→call, SELL→put)
-    amount: stake in account currency
-    duration_min: expiry in minutes (1, 5, ...)
-    """
     sess = get_session(session_id)
     if not sess or not sess.is_alive():
         return False, {"message": "Session not connected"}
