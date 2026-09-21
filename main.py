@@ -69,7 +69,7 @@ if not API_KEY and ENV == "production":
     raise RuntimeError("BACKEND_API_KEY must be set in production")
 
 
-# ── Background: trade result resolver ────────────────────────────────────────
+# ── Background tasks ────────────────────────────────────────────────────────
 
 
 async def _trade_result_resolver(stop: asyncio.Event) -> None:
@@ -363,7 +363,6 @@ def api_iq_candles(
     limit: int = 1000,
     _: None = Depends(require_api_key),
 ):
-    """Single-page candle fetch (max 1000 per IQ)."""
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
@@ -400,10 +399,6 @@ def api_iq_candles_history(
     total: int = 3000,
     _: None = Depends(require_api_key),
 ):
-    """
-    Paginated history — chains get_candles() calls going backwards
-    to fetch more than IQ's 1000-per-call limit.
-    """
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
@@ -478,7 +473,7 @@ def api_iq_indicators(
     macd_signal: int = 9,
     _: None = Depends(require_api_key),
 ):
-    """Compute RSI + MACD on the same candles the chart shows."""
+    """Compute RSI + MACD on live IQ candles."""
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
@@ -487,26 +482,42 @@ def api_iq_indicators(
     tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
     total = max(50, min(int(total or 500), 1000))
 
-    try:
-        raw = sess.api.get_candles(active, tf_seconds, total, time.time())
-    except Exception as e:
-        raise HTTPException(502, f"IQ candle error: {e}")
+    raw = None
+    for attempt in range(2):
+        try:
+            raw = sess.api.get_candles(active, tf_seconds, total, time.time())
+        except Exception as e:
+            logger.warning("indicators attempt %d failed: %s", attempt + 1, e)
+            raw = None
+        if raw:
+            break
+        time.sleep(0.4)
+
+    logger.info("indicators: %s %s returned %d candles", pair, tf, len(raw or []))
+
     if not raw:
         return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": []}
 
     rows = []
     for c in raw:
+        t = int(c.get("at") or c.get("from") or 0)
+        if t <= 0:
+            continue
         rows.append({
-            "time": int(c.get("at") or c.get("from") or 0),
+            "time": t,
             "open": float(c.get("open") or 0),
             "high": float(c.get("max") or c.get("high") or 0),
             "low": float(c.get("min") or c.get("low") or 0),
             "close": float(c.get("close") or 0),
         })
+
+    if not rows:
+        return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": []}
+
     rows.sort(key=lambda r: r["time"])
 
     df = pd.DataFrame(rows)
-    closes = df["close"]
+    closes = df["close"].astype(float)
 
     ema_fast = closes.ewm(span=macd_fast, adjust=False).mean()
     ema_slow = closes.ewm(span=macd_slow, adjust=False).mean()
@@ -524,10 +535,18 @@ def api_iq_indicators(
 
     rsi_out, macd_out, signal_out, hist_out = [], [], [], []
     for i, t in enumerate(df["time"].tolist()):
-        rsi_out.append({"time": int(t), "value": round(float(rsi_line.iloc[i]), 2)})
-        macd_out.append({"time": int(t), "value": round(float(macd_line.iloc[i]), 6)})
-        signal_out.append({"time": int(t), "value": round(float(signal_line.iloc[i]), 6)})
-        hist_out.append({"time": int(t), "value": round(float(histogram.iloc[i]), 6)})
+        rv = rsi_line.iloc[i]
+        mv = macd_line.iloc[i]
+        sv = signal_line.iloc[i]
+        hv = histogram.iloc[i]
+        if pd.isna(rv) or pd.isna(mv) or pd.isna(sv) or pd.isna(hv):
+            continue
+        rsi_out.append({"time": int(t), "value": round(float(rv), 2)})
+        macd_out.append({"time": int(t), "value": round(float(mv), 6)})
+        signal_out.append({"time": int(t), "value": round(float(sv), 6)})
+        hist_out.append({"time": int(t), "value": round(float(hv), 6)})
+
+    logger.info("indicators: computed rsi=%d macd=%d", len(rsi_out), len(macd_out))
 
     return {
         "status": "success",
@@ -541,7 +560,6 @@ def api_iq_indicators(
 
 @app.get("/api/iq/payouts")
 def api_iq_payouts(_: None = Depends(require_api_key)):
-    """Return current payout % for every tradeable asset on the live session."""
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
@@ -561,6 +579,86 @@ def api_iq_payouts(_: None = Depends(require_api_key)):
         except Exception:
             out[pair] = None
     return {"status": "success", "payouts": out}
+
+
+# ── Profile stats ───────────────────────────────────────────────────────────
+
+
+@app.get("/api/profile/stats")
+def api_profile_stats(
+    db: DBSession = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    import collections
+
+    trades = db.query(Trade).order_by(Trade.opened_at.asc()).all()
+    now = datetime.utcnow()
+
+    def within(days):
+        cutoff = now - timedelta(days=days)
+        return [t for t in trades if t.closed_at and t.closed_at >= cutoff]
+
+    def pnl(items):
+        return round(sum((t.profit or 0) for t in items if t.won is not None), 2)
+
+    today_items = [t for t in trades if t.closed_at and t.closed_at.date() == now.date()]
+    week_items = within(7)
+    month_items = within(30)
+    year_items = within(365)
+
+    closed = [t for t in trades if t.status == "closed" and t.won is not None]
+    best_streak = worst_streak = cur_win = cur_loss = 0
+    for t in closed:
+        if t.won:
+            cur_win += 1; cur_loss = 0
+        else:
+            cur_loss += 1; cur_win = 0
+        best_streak = max(best_streak, cur_win)
+        worst_streak = max(worst_streak, cur_loss)
+
+    wins = [t for t in closed if t.won]
+    losses = [t for t in closed if t.won is False]
+    avg_size = round(sum(t.amount for t in closed) / len(closed), 2) if closed else 0
+    avg_profit = round(sum((t.profit or 0) for t in closed) / len(closed), 2) if closed else 0
+
+    pair_counts = collections.Counter(t.pair for t in closed)
+    favorite = pair_counts.most_common(1)[0][0] if pair_counts else "—"
+
+    hours = collections.Counter(t.opened_at.hour for t in trades if t.opened_at)
+    top_hour = hours.most_common(1)[0][0] if hours else None
+    hour_range = f"{top_hour:02d}:00 – {(top_hour+2)%24:02d}:00" if top_hour is not None else "—"
+
+    spark = []
+    cumulative = 0.0
+    for t in closed[-30:]:
+        cumulative += (t.profit or 0)
+        spark.append(round(cumulative, 2))
+
+    first_trade = trades[0].opened_at if trades else None
+    created = first_trade.strftime("%b %Y") if first_trade else "—"
+
+    total = len(closed)
+    win_rate = round(len(wins) / total * 100, 1) if total else 0
+
+    return {
+        "status": "success",
+        "total_trades": total,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": win_rate,
+        "profit": {
+            "today": pnl(today_items),
+            "week": pnl(week_items),
+            "month": pnl(month_items),
+            "year": pnl(year_items),
+        },
+        "streaks": {"best": best_streak, "worst": worst_streak},
+        "averages": {"size": avg_size, "profit_per_trade": avg_profit},
+        "favorite_asset": favorite,
+        "most_active_hour": hour_range,
+        "account_created": created,
+        "sparkline": spark,
+    }
 
 
 # ── Signals ──────────────────────────────────────────────────────────────────
@@ -823,31 +921,43 @@ def api_place_trade(
     _: None = Depends(require_api_key),
 ):
     session_id = body.session_id
-    if body.place_on_iq and not session_id:
+    if not session_id:
         sess = iq.get_first_session()
         if sess:
             session_id = sess.session_id
-    if body.place_on_iq and not session_id:
-        raise HTTPException(400, "session_id is required when place_on_iq=true")
+    if not session_id:
+        raise HTTPException(400, "No IQ session connected")
 
-    iq_order_id = None
-    if body.place_on_iq and session_id:
-        ok, result = iq.place_binary_order(
-            session_id,
-            active=body.pair,
-            direction=body.direction,
-            amount=body.amount,
-            duration_min=body.minutes,
-        )
-        if not ok:
-            raise HTTPException(502, result.get("message", "Order rejected"))
-        iq_order_id = result.get("order_id")
+    # Live payout refresh
+    try:
+        sess = iq.get_session(session_id)
+        pair_key = body.pair.replace("/", "").upper()
+        if sess and sess.is_alive():
+            profits = sess.api.get_all_profit() or {}
+            data = profits.get(pair_key)
+            if isinstance(data, dict):
+                pct = data.get(sess.account_type) or data.get("turbo") or data.get("binary")
+                if pct:
+                    body.payout_pct = round(float(pct) * 100, 1)
+    except Exception as e:
+        logger.warning("payout fetch failed: %s", e)
+
+    ok, result = iq.place_binary_order(
+        session_id,
+        active=body.pair,
+        direction=body.direction,
+        amount=body.amount,
+        duration_min=body.minutes,
+    )
+    if not ok:
+        raise HTTPException(502, result.get("message", "Order rejected"))
+
+    iq_order_id = result.get("order_id")
 
     account_id = None
-    if session_id:
-        acc = get_account_by_session(db, session_id)
-        if acc:
-            account_id = acc.id
+    acc = get_account_by_session(db, session_id)
+    if acc:
+        account_id = acc.id
 
     expires = datetime.utcnow() + timedelta(minutes=body.minutes)
     trade = save_trade(
@@ -861,6 +971,12 @@ def api_place_trade(
         iq_order_id=iq_order_id,
         expires_at=expires,
     )
+
+    try:
+        new_balance = iq.refresh_balance(session_id)
+    except Exception:
+        new_balance = None
+
     return {
         "status": "success",
         "trade_id": trade.id,
@@ -868,6 +984,8 @@ def api_place_trade(
         "pair": trade.pair,
         "direction": trade.direction,
         "amount": trade.amount,
+        "payout_pct": body.payout_pct,
+        "balance": new_balance,
     }
 
 
