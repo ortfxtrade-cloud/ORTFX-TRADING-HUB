@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
+import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -66,6 +67,9 @@ RESULT_VOID_AFTER = int(os.getenv("RESULT_VOID_AFTER", "600"))
 
 if not API_KEY and ENV == "production":
     raise RuntimeError("BACKEND_API_KEY must be set in production")
+
+
+# ── Background: trade result resolver ────────────────────────────────────────
 
 
 async def _trade_result_resolver(stop: asyncio.Event) -> None:
@@ -356,17 +360,17 @@ def api_iq_current(_: None = Depends(require_api_key)):
 def api_iq_candles(
     pair: str,
     tf: str = "M1",
-    limit: int = 200,
+    limit: int = 1000,
     _: None = Depends(require_api_key),
 ):
-    """Fetch candles from the live IQ Option session."""
+    """Single-page candle fetch (max 1000 per IQ)."""
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
 
     active = pair.upper().replace("/", "").replace(" ", "")
     tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
-    limit = max(10, min(int(limit or 200), 1000))
+    limit = max(10, min(int(limit or 1000), 1000))
 
     try:
         raw = sess.api.get_candles(active, tf_seconds, limit, time.time())
@@ -385,7 +389,178 @@ def api_iq_candles(
             "low": float(c.get("min") or c.get("low") or 0),
             "close": float(c.get("close") or 0),
         })
+    candles.sort(key=lambda c: c["time"])
     return {"status": "success", "pair": pair, "tf": tf.upper(), "candles": candles}
+
+
+@app.get("/api/iq/candles/history")
+def api_iq_candles_history(
+    pair: str,
+    tf: str = "M1",
+    total: int = 3000,
+    _: None = Depends(require_api_key),
+):
+    """
+    Paginated history — chains get_candles() calls going backwards
+    to fetch more than IQ's 1000-per-call limit.
+    """
+    sess = iq.get_first_session()
+    if not sess or not sess.is_alive():
+        raise HTTPException(410, "No live IQ session")
+
+    active = pair.upper().replace("/", "").replace(" ", "")
+    tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
+
+    total = max(100, min(int(total or 3000), 20000))
+    PAGE = 1000
+
+    all_candles = []
+    seen_times = set()
+
+    end_time = time.time()
+    pages = min((total + PAGE - 1) // PAGE, 20)
+
+    for _ in range(pages):
+        try:
+            raw = sess.api.get_candles(active, tf_seconds, PAGE, end_time)
+        except Exception as e:
+            logger.warning("history page failed: %s", e)
+            break
+
+        if not raw:
+            break
+
+        page_candles = []
+        for c in raw:
+            t = int(c.get("at") or c.get("from") or 0)
+            if t <= 0 or t in seen_times:
+                continue
+            seen_times.add(t)
+            page_candles.append({
+                "time": t,
+                "open": float(c.get("open") or 0),
+                "high": float(c.get("max") or c.get("high") or 0),
+                "low": float(c.get("min") or c.get("low") or 0),
+                "close": float(c.get("close") or 0),
+            })
+
+        if not page_candles:
+            break
+
+        all_candles.extend(page_candles)
+        oldest = min(page_candles, key=lambda x: x["time"])["time"]
+        end_time = oldest - 1
+
+        if len(all_candles) >= total:
+            break
+
+    all_candles.sort(key=lambda c: c["time"])
+    if len(all_candles) > total:
+        all_candles = all_candles[-total:]
+
+    return {
+        "status": "success",
+        "pair": pair,
+        "tf": tf.upper(),
+        "count": len(all_candles),
+        "candles": all_candles,
+    }
+
+
+@app.get("/api/iq/indicators")
+def api_iq_indicators(
+    pair: str,
+    tf: str = "M1",
+    total: int = 500,
+    rsi_period: int = 14,
+    macd_fast: int = 12,
+    macd_slow: int = 26,
+    macd_signal: int = 9,
+    _: None = Depends(require_api_key),
+):
+    """Compute RSI + MACD on the same candles the chart shows."""
+    sess = iq.get_first_session()
+    if not sess or not sess.is_alive():
+        raise HTTPException(410, "No live IQ session")
+
+    active = pair.upper().replace("/", "").replace(" ", "")
+    tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
+    total = max(50, min(int(total or 500), 1000))
+
+    try:
+        raw = sess.api.get_candles(active, tf_seconds, total, time.time())
+    except Exception as e:
+        raise HTTPException(502, f"IQ candle error: {e}")
+    if not raw:
+        return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": []}
+
+    rows = []
+    for c in raw:
+        rows.append({
+            "time": int(c.get("at") or c.get("from") or 0),
+            "open": float(c.get("open") or 0),
+            "high": float(c.get("max") or c.get("high") or 0),
+            "low": float(c.get("min") or c.get("low") or 0),
+            "close": float(c.get("close") or 0),
+        })
+    rows.sort(key=lambda r: r["time"])
+
+    df = pd.DataFrame(rows)
+    closes = df["close"]
+
+    ema_fast = closes.ewm(span=macd_fast, adjust=False).mean()
+    ema_slow = closes.ewm(span=macd_slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=macd_signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / rsi_period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / rsi_period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, 1e-10)
+    rsi_line = 100 - (100 / (1 + rs))
+
+    rsi_out, macd_out, signal_out, hist_out = [], [], [], []
+    for i, t in enumerate(df["time"].tolist()):
+        rsi_out.append({"time": int(t), "value": round(float(rsi_line.iloc[i]), 2)})
+        macd_out.append({"time": int(t), "value": round(float(macd_line.iloc[i]), 6)})
+        signal_out.append({"time": int(t), "value": round(float(signal_line.iloc[i]), 6)})
+        hist_out.append({"time": int(t), "value": round(float(histogram.iloc[i]), 6)})
+
+    return {
+        "status": "success",
+        "candles": len(rows),
+        "rsi": rsi_out,
+        "macd": macd_out,
+        "signal": signal_out,
+        "hist": hist_out,
+    }
+
+
+@app.get("/api/iq/payouts")
+def api_iq_payouts(_: None = Depends(require_api_key)):
+    """Return current payout % for every tradeable asset on the live session."""
+    sess = iq.get_first_session()
+    if not sess or not sess.is_alive():
+        raise HTTPException(410, "No live IQ session")
+    try:
+        profits = sess.api.get_all_profit() or {}
+    except Exception as e:
+        raise HTTPException(502, f"payout error: {e}")
+
+    out = {}
+    for pair, data in profits.items():
+        try:
+            if isinstance(data, dict):
+                pct = data.get(sess.account_type) or data.get("turbo") or data.get("binary")
+                out[pair] = round(float(pct) * 100, 1) if pct else None
+            elif isinstance(data, (int, float)):
+                out[pair] = round(float(data) * 100, 1)
+        except Exception:
+            out[pair] = None
+    return {"status": "success", "payouts": out}
 
 
 # ── Signals ──────────────────────────────────────────────────────────────────
@@ -586,6 +761,7 @@ def api_list_trades(
             "losses": losses,
             "win_rate": round(win_rate, 1),
             "total_pnl": round(total_pnl, 2),
+            "total": len(rows),
         },
         "trades": [
             {
@@ -695,8 +871,7 @@ def api_place_trade(
     }
 
 
-# ── Fallback candles (yfinance, used only if IQ session unavailable) ────────
-
+# ── Fallback candles (yfinance) ─────────────────────────────────────────────
 
 TF_TO_YF = {
     "M1":  ("1d",  "1m"),
