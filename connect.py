@@ -69,10 +69,7 @@ def connect_iq(email: str, password: str, mode: str = "demo") -> Tuple[bool, Dic
         IQ_Option = _import_iq_option()
     except ImportError as e:
         logger.exception("iqoptionapi import failed")
-        return False, {
-            "status": "error",
-            "message": f"iqoptionapi not installed: {e}",
-        }
+        return False, {"status": "error", "message": f"iqoptionapi not installed: {e}"}
 
     try:
         api = IQ_Option(email, password)
@@ -165,7 +162,6 @@ def get_session(session_id: str) -> Optional[IQSession]:
 
 
 def get_first_session() -> Optional[IQSession]:
-    """Return the first live session, or None."""
     with _lock:
         sessions = list(_sessions.values())
     for s in sessions:
@@ -258,3 +254,71 @@ def list_active_sessions() -> List[Dict[str, Any]]:
         }
         for s in sessions
     ]
+
+
+# ── Trade result polling ─────────────────────────────────────────────────────
+
+
+def _extract_profit(msg: Dict[str, Any], won: bool) -> Optional[float]:
+    """Try to pull a numeric profit from an IQ result payload."""
+    for key in ("profit_amount", "profit", "pnl", "win_amount", "close_profit"):
+        if key in msg and msg[key] is not None:
+            try:
+                return float(msg[key])
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def get_order_result(session_id: str, order_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Ask IQ for the result of a binary order.
+
+    Returns:
+        {"status": "closed", "won": True/False, "profit": float|None}
+        {"status": "open"}   — not resolved yet
+        None                 — couldn't query (dead session, order unknown, ...)
+
+    Tries get_optioninfo() first (most forks), then get_async_order() (williansandi).
+    """
+    sess = get_session(session_id)
+    if not sess or not sess.is_alive():
+        return None
+
+    api = sess.api
+
+    # ── Path A: get_optioninfo(order_id) ─────────────────────────────────
+    try:
+        if hasattr(api, "get_optioninfo"):
+            info = api.get_optioninfo(10, order_id)
+            if isinstance(info, list) and info:
+                info = info[0]
+            if isinstance(info, dict) and info:
+                msg = info.get("msg", info)
+                status = str(msg.get("status") or "").lower()
+                if status in ("closed", "win", "loss"):
+                    won = status == "win" or bool(msg.get("win"))
+                    profit = _extract_profit(msg, won)
+                    return {"status": "closed", "won": won, "profit": profit}
+                if status in ("open", "pending"):
+                    return {"status": "open"}
+    except Exception as e:
+        logger.debug("get_optioninfo failed for %s: %s", order_id, e)
+
+    # ── Path B: get_async_order(order_id) ────────────────────────────────
+    try:
+        if hasattr(api, "get_async_order"):
+            info = api.get_async_order(order_id)
+            if isinstance(info, dict):
+                msg = info.get("msg", info)
+                status = str(msg.get("status") or info.get("status") or "").lower()
+                if status in ("closed", "win", "loss"):
+                    won = status == "win" or bool(msg.get("win"))
+                    profit = _extract_profit(msg, won)
+                    return {"status": "closed", "won": won, "profit": profit}
+                if status in ("open", "pending"):
+                    return {"status": "open"}
+    except Exception as e:
+        logger.debug("get_async_order failed for %s: %s", order_id, e)
+
+    return None
