@@ -356,6 +356,94 @@ def api_iq_current(_: None = Depends(require_api_key)):
     }
 
 
+@app.get("/api/iq/available")
+def api_iq_available(
+    pair: str,
+    minutes: int = 1,
+    _: None = Depends(require_api_key),
+):
+    """
+    Pre-flight check: is this pair tradeable right now, at what payout,
+    and does it support the requested duration?
+    """
+    sess = iq.get_first_session()
+    if not sess or not sess.is_alive():
+        raise HTTPException(410, "No live IQ session")
+
+    active = pair.upper().replace("/", "").replace(" ", "")
+    account_type = sess.account_type  # PRACTICE or REAL
+
+    # 1. Asset list — is it a known tradeable symbol?
+    in_list = False
+    try:
+        actives = sess.api.get_all_ACTIVES_OPCODE() or {}
+        in_list = active in actives
+    except Exception as e:
+        logger.debug("get_all_ACTIVES_OPCODE failed: %s", e)
+
+    # 2. Payout — if IQ gives a number > 0, the pair is open
+    payout = None
+    try:
+        profits = sess.api.get_all_profit() or {}
+        data = profits.get(active)
+        if isinstance(data, dict):
+            pct = data.get(account_type) or data.get("turbo") or data.get("binary")
+            if pct:
+                payout = round(float(pct) * 100, 1)
+        elif isinstance(data, (int, float)) and data:
+            payout = round(float(data) * 100, 1)
+    except Exception as e:
+        logger.debug("get_all_profit failed: %s", e)
+
+    # 3. Durations — what IQ allows for this pair
+    durations = []
+    try:
+        if hasattr(sess.api, "get_all_open_time"):
+            otime = sess.api.get_all_open_time() or {}
+            for kind in ("turbo", "binary"):
+                node = otime.get(kind, {}).get(active)
+                if isinstance(node, dict):
+                    d = node.get("durations") or node.get("min_duration")
+                    if isinstance(d, list) and d:
+                        durations = [int(x) for x in d if str(x).isdigit()]
+                    elif isinstance(d, int):
+                        durations = [d]
+                    if durations:
+                        break
+    except Exception as e:
+        logger.debug("get_all_open_time failed: %s", e)
+
+    if not durations:
+        durations = [1, 2, 3, 5, 10, 15, 30, 60]
+
+    tradeable = bool(in_list or payout)
+
+    # Check the specific duration
+    duration_ok = (minutes in durations) if durations else True
+
+    reason = None
+    if not tradeable:
+        reason = f"{active} not in IQ's tradeable list (market may be closed)"
+    elif payout is not None and payout <= 0:
+        reason = f"{active} has 0% payout right now"
+    elif not duration_ok:
+        reason = f"{active} doesn't support {minutes}m — try {sorted(set(durations))[:5]}"
+
+    return {
+        "status": "success",
+        "pair": active,
+        "tradeable": tradeable and duration_ok and (payout is None or payout > 0),
+        "in_asset_list": in_list,
+        "payout": payout,
+        "durations": sorted(set(durations)),
+        "minutes_requested": minutes,
+        "duration_ok": duration_ok,
+        "account_type": account_type,
+        "mode": sess.mode,
+        "reason": reason,
+    }
+
+
 @app.get("/api/iq/candles")
 def api_iq_candles(
     pair: str,
@@ -765,6 +853,11 @@ def api_confirm_signal(
     if not session_id:
         raise HTTPException(400, "No IQ session connected")
 
+    # Pre-flight duration check
+    DURATION_OK = {1, 2, 3, 5, 10, 15, 30, 60}
+    if minutes not in DURATION_OK:
+        minutes = 5
+
     ok, result = iq.place_binary_order(
         session_id,
         active=sig.pair,
@@ -928,29 +1021,60 @@ def api_place_trade(
     if not session_id:
         raise HTTPException(400, "No IQ session connected")
 
+    active = body.pair.upper().replace("/", "").replace(" ", "")
+
+    # Duration sanity
+    DURATION_OK = {1, 2, 3, 5, 10, 15, 30, 60}
+    if body.minutes not in DURATION_OK:
+        raise HTTPException(400, f"Duration {body.minutes}m not supported (use 1, 2, 3, 5, 10, 15, 30, 60)")
+
+    logger.info(
+        "TRADE REQUEST: pair=%s → active=%s dir=%s amt=%.2f dur=%dm session=%s",
+        body.pair, active, body.direction, body.amount, body.minutes,
+        session_id[:14] if session_id else "none",
+    )
+
     # Live payout refresh
+    payout = body.payout_pct
     try:
         sess = iq.get_session(session_id)
-        pair_key = body.pair.replace("/", "").upper()
         if sess and sess.is_alive():
             profits = sess.api.get_all_profit() or {}
-            data = profits.get(pair_key)
+            data = profits.get(active)
             if isinstance(data, dict):
                 pct = data.get(sess.account_type) or data.get("turbo") or data.get("binary")
                 if pct:
-                    body.payout_pct = round(float(pct) * 100, 1)
+                    payout = round(float(pct) * 100, 1)
+            elif isinstance(data, (int, float)) and data:
+                payout = round(float(data) * 100, 1)
     except Exception as e:
         logger.warning("payout fetch failed: %s", e)
 
+    # Place the order
     ok, result = iq.place_binary_order(
         session_id,
-        active=body.pair,
+        active=active,
         direction=body.direction,
         amount=body.amount,
         duration_min=body.minutes,
     )
+
+    logger.info("TRADE RESULT: ok=%s result=%s", ok, result)
+
     if not ok:
-        raise HTTPException(502, result.get("message", "Order rejected"))
+        detail = result.get("message", "Order rejected")
+        # Friendlier messages
+        low = detail.lower()
+        if "not available" in low:
+            detail = (
+                f"{active} is not tradeable right now on IQ. "
+                f"Try a different pair, a different duration, or wait for the market to open."
+            )
+        elif "amount" in low:
+            detail = f"Invalid amount: {detail}"
+        elif "duration" in low or "expiration" in low:
+            detail = f"Invalid duration: {detail}"
+        raise HTTPException(502, detail)
 
     iq_order_id = result.get("order_id")
 
@@ -965,7 +1089,7 @@ def api_place_trade(
         pair=body.pair,
         direction=body.direction.upper(),
         amount=body.amount,
-        payout_pct=body.payout_pct,
+        payout_pct=payout,
         minutes=body.minutes,
         account_id=account_id,
         iq_order_id=iq_order_id,
@@ -984,7 +1108,7 @@ def api_place_trade(
         "pair": trade.pair,
         "direction": trade.direction,
         "amount": trade.amount,
-        "payout_pct": body.payout_pct,
+        "payout_pct": payout,
         "balance": new_balance,
     }
 
