@@ -1,4 +1,4 @@
-"""SQLite database for accounts, signals, trades."""
+"""SQLite/Postgres database for accounts, signals, trades."""
 
 from __future__ import annotations
 
@@ -36,8 +36,6 @@ if not DATABASE_URL:
     base_dir = Path(__file__).resolve().parent
     DATABASE_URL = f"sqlite:///{base_dir / 'qt_trading.db'}"
 
-# Render Postgres URLs sometimes start with postgres:// — SQLAlchemy 2 wants
-# postgresql://. Normalize.
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
@@ -112,6 +110,13 @@ class Signal(Base):
 
 
 class Trade(Base):
+    """
+    status values:
+      'open'           — placed, before expiry
+      'pending_result' — past expiry, waiting for IQ to report outcome
+      'closed'         — resolved (won is True/False/None)
+      'void'           — couldn't determine result; treat as no-op
+    """
     __tablename__ = "trades"
     id = Column(Integer, primary_key=True, index=True)
     external_id = Column(String(64), unique=True, index=True, nullable=True)
@@ -137,7 +142,7 @@ class Trade(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Trade id={self.id} pair={self.pair} dir={self.direction}>"
+        return f"<Trade id={self.id} pair={self.pair} dir={self.direction} status={self.status}>"
 
 
 # ── Setup ────────────────────────────────────────────────────────────────────
@@ -343,13 +348,29 @@ def list_trades(
 ) -> List[Trade]:
     limit = max(1, min(int(limit or 100), 500))
     q = db.query(Trade).order_by(Trade.opened_at.desc())
-    if status:
+    if status == "open":
+        q = q.filter(Trade.status.in_(("open", "pending_result")))
+    elif status == "closed":
+        q = q.filter(Trade.status.in_(("closed", "void")))
+    elif status:
         q = q.filter(Trade.status == status)
     return q.limit(limit).all()
 
 
-def close_expired_trades(db: DBSession) -> int:
-    """Move open trades whose expires_at has passed → closed."""
+def list_unresolved_trades(db: DBSession, limit: int = 200) -> List[Trade]:
+    """Trades whose result we still need (open or awaiting result)."""
+    return (
+        db.query(Trade)
+        .filter(Trade.status.in_(("open", "pending_result")))
+        .filter(Trade.iq_order_id.isnot(None))
+        .order_by(Trade.opened_at.asc())
+        .limit(limit)
+        .all()
+    )
+
+
+def advance_expired_trades(db: DBSession) -> int:
+    """Stage 1: open → pending_result, once past expiry."""
     now = utcnow()
     expired = (
         db.query(Trade)
@@ -359,8 +380,33 @@ def close_expired_trades(db: DBSession) -> int:
         .all()
     )
     for t in expired:
-        t.status = "closed"
-        t.closed_at = now
+        t.status = "pending_result"
     if expired:
         db.commit()
     return len(expired)
+
+
+def resolve_trade(
+    db: DBSession,
+    trade_id: int,
+    *,
+    won: Optional[bool],
+    profit: Optional[float] = None,
+    status: str = "closed",
+) -> Optional[Trade]:
+    """Finalize a trade with its outcome."""
+    t = db.query(Trade).filter(Trade.id == trade_id).first()
+    if not t:
+        return None
+    t.status = status
+    t.won = won
+    t.profit = profit
+    t.closed_at = utcnow()
+    db.commit()
+    db.refresh(t)
+    return t
+
+
+def void_trade(db: DBSession, trade_id: int) -> Optional[Trade]:
+    """Mark a trade void — couldn't determine result in time."""
+    return resolve_trade(db, trade_id, won=None, profit=None, status="void")
