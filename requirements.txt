@@ -1,4 +1,10 @@
-fastapi
-uvicorn[standard]
-pydantic
-iqoptionapi @ git+https://github.com/iqoptionapi/iqoptionapi.git
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.36
+pydantic==2.10.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+python-multipart==0.0.20
+git+https://github.com/williansandi/iqoptionapi-2025-Atualizada-.git
+websocket-client>=1.6.0
+requests>=2.31.0
