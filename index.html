@@ -49,6 +49,11 @@
         }
       }
     }
+    window.BACKEND_URL = window.BACKEND_URL
+  || localStorage.getItem('backend_url')
+  || (window.location && window.location.protocol && !window.location.protocol.startsWith('file')
+      ? window.location.origin
+      : '');
   </script>
   <style>
     * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
