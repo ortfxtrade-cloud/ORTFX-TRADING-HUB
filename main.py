@@ -11,7 +11,7 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 import yfinance as yf
 from dotenv import load_dotenv
@@ -26,18 +26,21 @@ from database import (
     SessionLocal,
     Signal,
     Trade,
+    advance_expired_trades,
     clear_signals,
-    close_expired_trades,
     delete_signal,
     get_account_by_session,
     get_db,
     init_db,
     list_signals,
     list_trades,
+    list_unresolved_trades,
     mark_disconnected,
+    resolve_trade,
     save_signal,
     save_trade,
     upsert_account,
+    void_trade,
 )
 from signal_worker import signal_loop
 
@@ -52,41 +55,107 @@ logger = logging.getLogger("qt.main")
 API_KEY = os.getenv("BACKEND_API_KEY", "").strip()
 ENV = os.getenv("ENV", "dev").lower()
 
-# IQ credentials from Render env
 IQ_EMAIL = os.getenv("IQ_EMAIL", "").strip()
 IQ_PASSWORD = os.getenv("IQ_PASSWORD", "")
 IQ_MODE = os.getenv("IQ_MODE", "demo").strip().lower()
 IQ_AUTO_CONNECT = os.getenv("IQ_AUTO_CONNECT", "true").lower() in ("1", "true", "yes")
 
+RESULT_POLL_INTERVAL = int(os.getenv("RESULT_POLL_INTERVAL", "10"))
+RESULT_VOID_AFTER = int(os.getenv("RESULT_VOID_AFTER", "600"))
+
 if not API_KEY and ENV == "production":
     raise RuntimeError("BACKEND_API_KEY must be set in production")
 
 
-async def _expiry_sweeper(stop: asyncio.Event) -> None:
+# ── Background: trade result resolver ────────────────────────────────────────
+
+
+async def _trade_result_resolver(stop: asyncio.Event) -> None:
+    """
+    Every RESULT_POLL_INTERVAL seconds:
+      1. Move expired 'open' trades → 'pending_result'
+      2. Ask IQ for the result of every 'pending_result' trade
+      3. Resolve as won/lost, or void if too much time has passed
+    """
+    logger.info(
+        "Trade resolver started (poll=%ds, void_after=%ds)",
+        RESULT_POLL_INTERVAL, RESULT_VOID_AFTER,
+    )
+
     while not stop.is_set():
         try:
+            # Stage 1: advance expired open trades
             db = SessionLocal()
             try:
-                n = close_expired_trades(db)
-                if n:
-                    logger.info("Expiry sweeper closed %d trade(s)", n)
+                n_advanced = advance_expired_trades(db)
+                if n_advanced:
+                    logger.info("Advanced %d trade(s) to pending_result", n_advanced)
             finally:
                 db.close()
+
+            # Stage 2: query IQ for results
+            sessions = iq.list_active_sessions()
+            live = next((s for s in sessions if s["alive"]), None)
+            session_id = live["session_id"] if live else None
+
+            db = SessionLocal()
+            try:
+                unresolved = list_unresolved_trades(db)
+                for trade in unresolved:
+                    if trade.status == "open":
+                        continue
+                    if not session_id:
+                        continue
+
+                    result = iq.get_order_result(session_id, trade.iq_order_id)
+
+                    if result and result.get("status") == "closed":
+                        won = result.get("won")
+                        profit = result.get("profit")
+                        if profit is None and won is not None:
+                            if won:
+                                profit = round(trade.amount * (trade.payout_pct / 100.0), 2)
+                            else:
+                                profit = -trade.amount
+                        resolve_trade(db, trade.id, won=won, profit=profit)
+                        logger.info(
+                            "Resolved trade #%d %s %s → won=%s profit=%s",
+                            trade.id, trade.pair, trade.direction, won, profit,
+                        )
+                    elif result and result.get("status") == "open":
+                        continue
+                    else:
+                        # No usable answer. Void after grace period.
+                        if trade.expires_at:
+                            age = (datetime.utcnow() - trade.expires_at).total_seconds()
+                            if age > RESULT_VOID_AFTER:
+                                void_trade(db, trade.id)
+                                logger.warning(
+                                    "Voided trade #%d (no IQ result after %ds)",
+                                    trade.id, int(age),
+                                )
+            finally:
+                db.close()
+
         except Exception as e:
-            logger.warning("expiry_sweeper: %s", e)
+            logger.exception("trade resolver error: %s", e)
+
         try:
-            await asyncio.wait_for(stop.wait(), timeout=15)
+            await asyncio.wait_for(stop.wait(), timeout=RESULT_POLL_INTERVAL)
         except asyncio.TimeoutError:
             pass
 
+    logger.info("Trade resolver stopped")
+
+
+# ── Auto connect ─────────────────────────────────────────────────────────────
+
 
 async def _auto_connect_iq() -> None:
-    """Connect using IQ_EMAIL / IQ_PASSWORD from env, if configured."""
     if not (IQ_AUTO_CONNECT and IQ_EMAIL and IQ_PASSWORD):
         logger.info("IQ auto-connect skipped (no creds or disabled)")
         return
 
-    # Retry a few times in case IQ is slow at boot.
     for attempt in range(1, 4):
         ok, payload = iq.connect_iq(IQ_EMAIL, IQ_PASSWORD, IQ_MODE)
         if ok:
@@ -117,6 +186,9 @@ async def _auto_connect_iq() -> None:
     logger.error("IQ auto-connect gave up after 3 attempts")
 
 
+# ── Lifespan ─────────────────────────────────────────────────────────────────
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -124,14 +196,14 @@ async def lifespan(app: FastAPI):
 
     stop = asyncio.Event()
     worker = asyncio.create_task(signal_loop(stop))
-    sweeper = asyncio.create_task(_expiry_sweeper(stop))
+    resolver = asyncio.create_task(_trade_result_resolver(stop))
     await _auto_connect_iq()
 
     logger.info("Background tasks started")
     yield
 
     stop.set()
-    for task in (worker, sweeper):
+    for task in (worker, resolver):
         try:
             await asyncio.wait_for(task, timeout=5)
         except asyncio.TimeoutError:
@@ -228,7 +300,6 @@ def api_iq_connect(
     db: DBSession = Depends(get_db),
     _: None = Depends(require_api_key),
 ):
-    # Fall back to env creds if the request didn't supply them.
     email = (body.email or IQ_EMAIL).strip().lower()
     password = body.password or IQ_PASSWORD
     mode = (body.mode or IQ_MODE or "demo").lower()
@@ -291,7 +362,6 @@ def api_iq_sessions(_: None = Depends(require_api_key)):
 
 @app.get("/api/iq/current")
 def api_iq_current(_: None = Depends(require_api_key)):
-    """Return the currently active (auto-connected) session, if any."""
     sess = iq.get_first_session()
     if not sess:
         return {"status": "none"}
@@ -401,7 +471,6 @@ def api_confirm_signal(
 
     minutes = body.minutes_override or sig.minutes or 5
 
-    # If no session_id was sent, use the auto-connected one.
     session_id = body.session_id
     if not session_id:
         sess = iq.get_first_session()
@@ -490,9 +559,22 @@ def api_list_trades(
     _: None = Depends(require_api_key),
 ):
     rows = list_trades(db, status=status, limit=limit)
+
+    closed = [t for t in rows if t.status == "closed" and t.won is not None]
+    wins = sum(1 for t in closed if t.won)
+    losses = sum(1 for t in closed if t.won is False)
+    total_pnl = sum((t.profit or 0) for t in closed)
+    win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+
     return {
         "status": "success",
         "count": len(rows),
+        "summary": {
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(win_rate, 1),
+            "total_pnl": round(total_pnl, 2),
+        },
         "trades": [
             {
                 "id": t.id,
@@ -512,6 +594,39 @@ def api_list_trades(
             for t in rows
         ],
     }
+
+
+@app.post("/api/trades/refresh")
+async def api_refresh_trades(_: None = Depends(require_api_key)):
+    """Force one pass of the trade resolver right now."""
+    sessions = iq.list_active_sessions()
+    live = next((s for s in sessions if s["alive"]), None)
+    session_id = live["session_id"] if live else None
+
+    db = SessionLocal()
+    updated = 0
+    try:
+        advance_expired_trades(db)
+        unresolved = list_unresolved_trades(db)
+        for trade in unresolved:
+            if trade.status == "open":
+                continue
+            if not session_id:
+                break
+            result = iq.get_order_result(session_id, trade.iq_order_id)
+            if result and result.get("status") == "closed":
+                won = result.get("won")
+                profit = result.get("profit")
+                if profit is None and won is not None:
+                    profit = (
+                        round(trade.amount * (trade.payout_pct / 100.0), 2)
+                        if won else -trade.amount
+                    )
+                resolve_trade(db, trade.id, won=won, profit=profit)
+                updated += 1
+    finally:
+        db.close()
+    return {"status": "success", "updated": updated}
 
 
 @app.post("/api/trade")
@@ -569,7 +684,8 @@ def api_place_trade(
     }
 
 
-# ── Candles (for the chart) ──────────────────────────────────────────────────
+# ── Candles ──────────────────────────────────────────────────────────────────
+
 
 TF_TO_YF = {
     "M1":  ("1d",  "1m"),
@@ -584,7 +700,6 @@ def _to_yf_symbol(pair: str) -> str:
     p = pair.upper().replace("/", "").replace(" ", "")
     if p.endswith("=X"):
         return p
-    # Crypto: BTC/USD → BTC-USD
     if p in ("BTCUSD", "ETHUSD"):
         return p[:3] + "-" + p[3:]
     return p + "=X"
