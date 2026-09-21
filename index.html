@@ -70,7 +70,7 @@
   }
   .modal-backdrop.open .modal-panel { transform: translateY(0); }
 
-  #tvChart { position: absolute; inset: 0; z-index: 10; }
+  #tvChart, #rsiChart, #macdChart { position: absolute; inset: 0; }
 
   .toast {
     position: fixed; left: 50%; bottom: 100px;
@@ -141,7 +141,8 @@
     </div>
   </div>
 
-  <div class="relative mx-1 mt-1 h-[340px] rounded-lg overflow-hidden border border-[#1a2433]">
+  <!-- Price chart -->
+  <div id="pricePane" class="relative mx-1 mt-1 h-[280px] rounded-t-lg overflow-hidden border border-[#1a2433]" style="border-bottom-width:0;">
     <div id="tvChart"></div>
     <div class="absolute right-1.5 top-1.5 z-30 flex flex-col gap-1.5">
       <button onclick="fitChart()" class="w-9 h-9 rounded-xl bg-[#1a2433]/95 border border-[#2a3544] flex items-center justify-center text-gray-300">
@@ -171,6 +172,18 @@
       </button>
     </div>
     <div id="chartStatus" class="absolute left-2 bottom-2 z-30 text-[10px] text-gray-500 bg-[#0e141d]/80 px-2 py-1 rounded-md">connecting…</div>
+  </div>
+
+  <!-- RSI pane (hidden by default) -->
+  <div id="rsiPane" class="relative mx-1 h-[90px] overflow-hidden border-x border-[#1a2433] hidden" style="border-bottom-width:0;">
+    <div id="rsiChart"></div>
+    <div class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">RSI 14 · 30 / 50 / 70</div>
+  </div>
+
+  <!-- MACD pane (hidden by default) -->
+  <div id="macdPane" class="relative mx-1 h-[110px] overflow-hidden border border-[#1a2433] rounded-b-lg hidden">
+    <div id="macdChart"></div>
+    <div class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">MACD 12 / 26 / 9</div>
   </div>
 
   <div class="px-3 mt-1">
@@ -214,11 +227,11 @@
     <div class="grid grid-cols-2 gap-3">
       <button id="buyBtn" onclick="placeTrade('BUY')" class="btn-buy rounded-xl py-3.5 flex items-center justify-center gap-2 w-full">
         <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 17L17 7M17 7H7M17 7v10"/></svg>
-        <div class="text-left leading-tight"><div class="text-sm font-bold text-white">BUY</div><div class="text-[11px] text-white/90 font-medium">85%</div></div>
+        <div class="text-left leading-tight"><div class="text-sm font-bold text-white">BUY</div><div class="text-[11px] text-white/90 font-medium" id="buyPayout">85%</div></div>
       </button>
       <button id="sellBtn" onclick="placeTrade('SELL')" class="btn-sell rounded-xl py-3.5 flex items-center justify-center gap-2 w-full">
         <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 7L7 17M7 17h10M7 17V7"/></svg>
-        <div class="text-left leading-tight"><div class="text-sm font-bold text-white">SELL</div><div class="text-[11px] text-white/90 font-medium">85%</div></div>
+        <div class="text-left leading-tight"><div class="text-sm font-bold text-white">SELL</div><div class="text-[11px] text-white/90 font-medium" id="sellPayout">85%</div></div>
       </button>
     </div>
   </div>
@@ -307,10 +320,30 @@
       <div class="text-base font-semibold">Trader</div>
       <div class="text-xs text-gray-500" id="profileEmail">not connected</div>
     </div>
-    <div class="space-y-2">
+    <div class="space-y-2 mb-4">
       <div class="flex justify-between text-sm py-2 border-b border-[#1f2a3a]"><span class="text-gray-400">Broker</span><span id="profileBroker">—</span></div>
       <div class="flex justify-between text-sm py-2 border-b border-[#1f2a3a]"><span class="text-gray-400">Mode</span><span id="profileMode">—</span></div>
+      <div class="flex justify-between text-sm py-2 border-b border-[#1f2a3a]"><span class="text-gray-400">Balance</span><span id="profileBalance" class="text-green-400 font-semibold">—</span></div>
       <div class="flex justify-between text-sm py-2 border-b border-[#1f2a3a]"><span class="text-gray-400">Session</span><span id="profileSession" class="text-xs">—</span></div>
+    </div>
+    <div class="text-[11px] text-gray-500 uppercase tracking-wider mb-2">Performance</div>
+    <div class="grid grid-cols-3 gap-2 mb-3">
+      <div class="bg-[#0e141d] border border-[#1f2a3a] rounded-xl p-3 text-center">
+        <div class="text-[10px] text-gray-400 mb-1">Win rate</div>
+        <div id="profileWinRate" class="text-lg font-bold text-white">0%</div>
+      </div>
+      <div class="bg-[#0e141d] border border-[#1f2a3a] rounded-xl p-3 text-center">
+        <div class="text-[10px] text-gray-400 mb-1">W / L</div>
+        <div id="profileWL" class="text-lg font-bold text-white">0 / 0</div>
+      </div>
+      <div class="bg-[#0e141d] border border-[#1f2a3a] rounded-xl p-3 text-center">
+        <div class="text-[10px] text-gray-400 mb-1">P&L</div>
+        <div id="profilePnl" class="text-lg font-bold text-white">0.00</div>
+      </div>
+    </div>
+    <div class="bg-[#0e141d] border border-[#1f2a3a] rounded-xl p-3 text-center">
+      <div class="text-[10px] text-gray-400 mb-1">Total trades</div>
+      <div id="profileTotal" class="text-base font-semibold text-white">0</div>
     </div>
     <button onclick="closeModal('profile')" class="w-full mt-4 py-3 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm">Close</button>
   </div>
@@ -378,6 +411,14 @@
       <span class="text-sm">EMA 50</span>
       <input id="ind-ema50" type="checkbox" onchange="toggleEma50(this.checked)" class="w-5 h-5 accent-green-500">
     </label>
+    <label class="flex items-center justify-between py-3 border-b border-[#1f2a3a]">
+      <span class="text-sm">RSI (14) — with 30 / 50 / 70 lines</span>
+      <input id="ind-rsi" type="checkbox" onchange="toggleRsi(this.checked)" class="w-5 h-5 accent-purple-500">
+    </label>
+    <label class="flex items-center justify-between py-3 border-b border-[#1f2a3a]">
+      <span class="text-sm">MACD (12/26/9)</span>
+      <input id="ind-macd" type="checkbox" onchange="toggleMacd(this.checked)" class="w-5 h-5 accent-blue-500">
+    </label>
     <button onclick="closeModal('indicators')" class="w-full mt-3 py-3 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm">Close</button>
   </div>
 </div>
@@ -433,6 +474,8 @@ const state = {
   ema50On: false,
   ema20Series: null,
   ema50Series: null,
+  rsiOn: false,
+  macdOn: false,
   signals: [],
   trades: [],
   tradesSummary: null,
@@ -478,7 +521,7 @@ function switchScreen(name) {
   });
   if (name === "trades") loadTrades();
   if (name === "signal") loadSignals();
-  if (name === "classic" && chart) setTimeout(() => chart.timeScale().fitContent(), 50);
+  if (name === "classic") setTimeout(() => resizeCharts(), 50);
 }
 window.switchScreen = switchScreen;
 
@@ -492,7 +535,9 @@ function openModal(name) {
   if (name === "watchlist") renderPairList();
   if (name === "timeframe") renderTfList();
   if (name === "account") renderAccountModal();
-  if (name === "profile") renderProfile();
+  if (name === "profile") {
+    loadTrades().then(() => renderProfile());
+  }
   el.classList.add("open");
 }
 function closeModal(name) {
@@ -502,40 +547,121 @@ function closeModal(name) {
 window.openModal = openModal;
 window.closeModal = closeModal;
 
+// ── Charts ─────────────────────────────────────────────────────────────
 let chart, candleSeries;
+let rsiChart, rsiSeries;
+let macdChart, macdHistSeries, macdLineSeries, macdSignalSeries;
+let _syncingRange = false;
+
+const CHART_THEME = {
+  layout: { background: { color: "#0e141d" }, textColor: "#9ca3af", fontFamily: "Inter, sans-serif", fontSize: 11 },
+  grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+  rightPriceScale: { borderColor: "#1f2a3a", borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.08 }, entireTextOnly: true },
+  timeScale: { borderColor: "#1f2a3a", borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 5, barSpacing: 8, minBarSpacing: 1 },
+  crosshair: {
+    mode: LightweightCharts.CrosshairMode.Normal,
+    vertLine: { color: "#3b82f6", width: 1, style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: "#1e3a5f" },
+    horzLine: { color: "#3b82f6", width: 1, style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: "#1e3a5f" },
+  },
+  handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+  handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+};
 
 function initChart() {
-  const container = $("tvChart");
-  if (!container || !window.LightweightCharts) return;
-  container.innerHTML = "";
-  chart = LightweightCharts.createChart(container, {
-    width: container.clientWidth,
-    height: container.clientHeight,
-    layout: { background: { color: "#0e141d" }, textColor: "#9ca3af", fontFamily: "Inter, sans-serif" },
-    grid: { vertLines: { color: "#1a2433" }, horzLines: { color: "#1a2433" } },
-    rightPriceScale: { borderColor: "#1f2a3a" },
-    timeScale: { borderColor: "#1f2a3a", timeVisible: true, secondsVisible: false },
-    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  const priceEl = $("tvChart");
+  if (!priceEl || !window.LightweightCharts) return;
+  priceEl.innerHTML = "";
+
+  chart = LightweightCharts.createChart(priceEl, {
+    ...CHART_THEME,
+    width: priceEl.clientWidth,
+    height: priceEl.clientHeight,
+    localization: { priceFormatter: (p) => p.toFixed(5) },
   });
   candleSeries = chart.addCandlestickSeries({
-    upColor: "#00c853", downColor: "#ff4d1a",
-    borderUpColor: "#00c853", borderDownColor: "#ff4d1a",
-    wickUpColor: "#00c853", wickDownColor: "#ff4d1a",
+    upColor: "#26a69a", downColor: "#ef5350",
+    borderUpColor: "#26a69a", borderDownColor: "#ef5350",
+    wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+    priceFormat: { type: "price", precision: 5, minMove: 0.00001 },
+    priceLineVisible: false, lastValueVisible: true,
   });
-  window.addEventListener("resize", () => {
-    chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+
+  const rsiEl = $("rsiChart");
+  rsiEl.innerHTML = "";
+  rsiChart = LightweightCharts.createChart(rsiEl, {
+    ...CHART_THEME,
+    width: rsiEl.clientWidth,
+    height: rsiEl.clientHeight,
+    rightPriceScale: { borderColor: "#1f2a3a", borderVisible: false, scaleMargins: { top: 0.1, bottom: 0.1 }, entireTextOnly: true },
+    localization: { priceFormatter: (p) => p.toFixed(0) },
   });
+  rsiSeries = rsiChart.addLineSeries({
+    color: "#a78bfa", lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
+    priceFormat: { type: "price", precision: 1, minMove: 0.1 },
+  });
+  rsiSeries.createPriceLine({ price: 70, color: "#ef5350", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "70" });
+  rsiSeries.createPriceLine({ price: 50, color: "#6b7280", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: "50" });
+  rsiSeries.createPriceLine({ price: 30, color: "#26a69a", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "30" });
+
+  const macdEl = $("macdChart");
+  macdEl.innerHTML = "";
+  macdChart = LightweightCharts.createChart(macdEl, {
+    ...CHART_THEME,
+    width: macdEl.clientWidth,
+    height: macdEl.clientHeight,
+    rightPriceScale: { borderColor: "#1f2a3a", borderVisible: false, scaleMargins: { top: 0.15, bottom: 0.15 }, entireTextOnly: true },
+    localization: { priceFormatter: (p) => p.toFixed(5) },
+  });
+  macdHistSeries = macdChart.addHistogramSeries({
+    priceFormat: { type: "price", precision: 5, minMove: 0.00001 },
+    priceLineVisible: false, lastValueVisible: false,
+  });
+  macdLineSeries = macdChart.addLineSeries({ color: "#3b82f6", lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 5, minMove: 0.00001 } });
+  macdSignalSeries = macdChart.addLineSeries({ color: "#f59e0b", lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "price", precision: 5, minMove: 0.00001 } });
+
+  const charts = [chart, rsiChart, macdChart];
+  charts.forEach((c, idx) => {
+    c.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (_syncingRange || !range) return;
+      _syncingRange = true;
+      charts.forEach((other, j) => {
+        if (j !== idx) {
+          try { other.timeScale().setVisibleLogicalRange(range); } catch {}
+        }
+      });
+      _syncingRange = false;
+    });
+  });
+
+  window.addEventListener("resize", resizeCharts);
 }
 
-function fitChart() { chart && chart.timeScale().fitContent(); }
+function resizeCharts() {
+  if (!chart) return;
+  const priceEl = $("tvChart");
+  const rsiEl = $("rsiChart");
+  const macdEl = $("macdChart");
+  chart.applyOptions({ width: priceEl.clientWidth, height: priceEl.clientHeight });
+  rsiChart.applyOptions({ width: rsiEl.clientWidth, height: rsiEl.clientHeight });
+  macdChart.applyOptions({ width: macdEl.clientWidth, height: macdEl.clientHeight });
+}
+
+function fitChart() {
+  if (!chart) return;
+  chart.timeScale().fitContent();
+  rsiChart.timeScale().fitContent();
+  macdChart.timeScale().fitContent();
+}
 function toggleCrosshair(show) {
-  chart && chart.applyOptions({ crosshair: { mode: show ? LightweightCharts.CrosshairMode.Normal : LightweightCharts.CrosshairMode.Hidden } });
+  const mode = show ? LightweightCharts.CrosshairMode.Normal : LightweightCharts.CrosshairMode.Hidden;
+  [chart, rsiChart, macdChart].forEach(c => c && c.applyOptions({ crosshair: { mode } }));
   closeModal("drawings");
 }
 function resetChartView() {
   fitChart();
   if (state.ema20Series) state.ema20Series.setData([]);
   if (state.ema50Series) state.ema50Series.setData([]);
+  window._chartFitted = false;
   closeModal("drawings");
 }
 window.fitChart = fitChart;
@@ -548,8 +674,7 @@ function toggleEma20(on) {
     state.ema20Series = chart.addLineSeries({ color: "#3b82f6", lineWidth: 2, priceLineVisible: false });
     refetchEma(20).then(rows => state.ema20Series.setData(rows));
   } else if (!on && state.ema20Series) {
-    chart.removeSeries(state.ema20Series);
-    state.ema20Series = null;
+    chart.removeSeries(state.ema20Series); state.ema20Series = null;
   }
   updateIndBadge();
 }
@@ -559,16 +684,35 @@ function toggleEma50(on) {
     state.ema50Series = chart.addLineSeries({ color: "#f59e0b", lineWidth: 2, priceLineVisible: false });
     refetchEma(50).then(rows => state.ema50Series.setData(rows));
   } else if (!on && state.ema50Series) {
-    chart.removeSeries(state.ema50Series);
-    state.ema50Series = null;
+    chart.removeSeries(state.ema50Series); state.ema50Series = null;
   }
+  updateIndBadge();
+}
+function toggleRsi(on) {
+  state.rsiOn = on;
+  $("rsiPane").classList.toggle("hidden", !on);
+  setTimeout(() => {
+    resizeCharts();
+    if (on) loadIndicators();
+  }, 60);
+  updateIndBadge();
+}
+function toggleMacd(on) {
+  state.macdOn = on;
+  $("macdPane").classList.toggle("hidden", !on);
+  setTimeout(() => {
+    resizeCharts();
+    if (on) loadIndicators();
+  }, 60);
   updateIndBadge();
 }
 window.toggleEma20 = toggleEma20;
 window.toggleEma50 = toggleEma50;
+window.toggleRsi = toggleRsi;
+window.toggleMacd = toggleMacd;
 
 function updateIndBadge() {
-  const n = (state.ema20On ? 1 : 0) + (state.ema50On ? 1 : 0);
+  const n = (state.ema20On ? 1 : 0) + (state.ema50On ? 1 : 0) + (state.rsiOn ? 1 : 0) + (state.macdOn ? 1 : 0);
   const b = $("indBadge");
   b.textContent = n;
   b.style.display = n ? "flex" : "none";
@@ -576,7 +720,7 @@ function updateIndBadge() {
 
 async function refetchEma(period) {
   try {
-    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=200`);
+    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&total=500`);
     return ema((r.candles || []), period);
   } catch { return []; }
 }
@@ -596,7 +740,7 @@ function setChartStatus(text) { const el = $("chartStatus"); if (el) el.textCont
 async function loadCandles() {
   setChartStatus("loading…");
   try {
-    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=200`);
+    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&total=2000`);
     const candles = (r.candles || []).map(c => ({
       time: c.time, open: +c.open, high: +c.high, low: +c.low, close: +c.close,
     }));
@@ -606,13 +750,44 @@ async function loadCandles() {
       return;
     }
     candleSeries.setData(candles);
-    chart.timeScale().fitContent();
+
+    if (!window._chartFitted) {
+      const visible = candles.slice(-200);
+      if (visible.length) {
+        chart.timeScale().setVisibleRange({ from: visible[0].time, to: visible[visible.length - 1].time });
+      }
+      window._chartFitted = true;
+    }
+
     updateSentiment(candles);
     setChartStatus(`${cfg.pair} · ${cfg.tf} · ${candles.length} bars`);
+
     if (state.ema20Series) state.ema20Series.setData(ema(candles, 20));
     if (state.ema50Series) state.ema50Series.setData(ema(candles, 50));
+
+    if (state.rsiOn || state.macdOn) loadIndicators();
   } catch (e) {
     setChartStatus("error: " + e.message);
+  }
+}
+
+async function loadIndicators() {
+  try {
+    const r = await api(`/api/iq/indicators?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&total=500`);
+    if (state.rsiOn) {
+      const rows = (r.rsi || []).map(p => ({ time: p.time, value: p.value }));
+      rsiSeries.setData(rows);
+    }
+    if (state.macdOn) {
+      const hist = (r.hist || []).map(p => ({ time: p.time, value: p.value, color: p.value >= 0 ? "#26a69a" : "#ef5350" }));
+      const macd = (r.macd || []).map(p => ({ time: p.time, value: p.value }));
+      const signal = (r.signal || []).map(p => ({ time: p.time, value: p.value }));
+      macdHistSeries.setData(hist);
+      macdLineSeries.setData(macd);
+      macdSignalSeries.setData(signal);
+    }
+  } catch (e) {
+    console.warn("indicators:", e.message);
   }
 }
 
@@ -627,6 +802,7 @@ async function pollCandles() {
         open: +last.open, high: +last.high, low: +last.low, close: +last.close,
       });
       updateSentimentTick(+last.close, +last.open);
+      if (state.rsiOn || state.macdOn) loadIndicators();
     }
   } catch {}
 }
@@ -651,6 +827,7 @@ function renderSentiment(bullPct) {
   $("bearPct").textContent = bear + "%";
 }
 
+// ── Pairs & timeframes ──────────────────────────────────────────────────
 const PAIRS = [
   "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","NZD/USD",
   "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CAD","AUD/JPY",
@@ -668,8 +845,10 @@ function selectPair(p) {
   cfg.pair = p;
   localStorage.setItem("qt_pair", p);
   $("currentPair").textContent = p;
+  window._chartFitted = false;
   closeModal("watchlist");
   loadCandles();
+  loadPayout();
 }
 window.selectPair = selectPair;
 
@@ -683,11 +862,13 @@ function selectTf(t) {
   cfg.tf = t;
   localStorage.setItem("qt_tf", t);
   $("tfBadge").textContent = t;
+  window._chartFitted = false;
   closeModal("timeframe");
   loadCandles();
 }
 window.selectTf = selectTf;
 
+// ── Account ─────────────────────────────────────────────────────────────
 function setMode(m) {
   cfg.mode = m;
   localStorage.setItem("qt_mode", m);
@@ -716,6 +897,7 @@ async function connectIQ() {
     renderProfile();
     toast("Connected (" + (r.account_type || cfg.mode) + ")", "ok");
     loadCandles();
+    loadPayout();
   } catch (e) {
     toast("Connect failed: " + e.message, "err");
   }
@@ -738,9 +920,7 @@ async function tryAutoConnect() {
       toast("Connected to IQ", "ok");
       return;
     }
-  } catch (e) {
-    console.warn("auto-connect via backend failed:", e.message);
-  }
+  } catch (e) { console.warn(e.message); }
 
   const savedId = localStorage.getItem("qt_session_id");
   const savedEmail = localStorage.getItem("qt_session_email");
@@ -756,12 +936,11 @@ async function tryAutoConnect() {
       renderProfile();
       toast("Reconnected to IQ", "ok");
       return;
-    } catch (e) {
+    } catch {
       localStorage.removeItem("qt_session_id");
       localStorage.removeItem("qt_session_email");
     }
   }
-
   renderBalance();
   renderAccountModal();
   renderProfile();
@@ -817,9 +996,36 @@ function renderProfile() {
   $("profileEmail").textContent = state.accountEmail || "not connected";
   $("profileBroker").textContent = state.sessionId ? "IQ Option" : "—";
   $("profileMode").textContent = state.sessionId ? cfg.mode : "—";
+  $("profileBalance").textContent = state.sessionId ? `${(+state.balance).toFixed(2)} ${state.currency}` : "—";
   $("profileSession").textContent = state.sessionId || "—";
+
+  const s = state.tradesSummary || { wins: 0, losses: 0, win_rate: 0, total_pnl: 0, total: 0 };
+  $("profileWinRate").textContent = s.win_rate + "%";
+  $("profileWL").textContent = s.wins + " / " + s.losses;
+  const pnlEl = $("profilePnl");
+  pnlEl.textContent = (s.total_pnl >= 0 ? "+" : "") + s.total_pnl;
+  pnlEl.className = "text-lg font-bold " + (s.total_pnl >= 0 ? "text-green-400" : "text-red-400");
+  $("profileTotal").textContent = s.total || state.trades.length;
 }
 
+// ── Payout display ──────────────────────────────────────────────────────
+async function loadPayout() {
+  try {
+    const r = await api("/api/iq/payouts");
+    const key = cfg.pair.replace("/", "").toUpperCase();
+    const pct = (r.payouts || {})[key];
+    if (pct != null) {
+      const buyEl = $("buyPayout");
+      const sellEl = $("sellPayout");
+      if (buyEl) buyEl.textContent = pct + "%";
+      if (sellEl) sellEl.textContent = pct + "%";
+    }
+  } catch (e) {
+    console.warn("payouts:", e.message);
+  }
+}
+
+// ── Trade panel ─────────────────────────────────────────────────────────
 function adjustTime(d) { const el = $("tradeTime"); el.value = Math.max(1, Math.min(60, (+el.value || 1) + d)); }
 function adjustAmount(d) { const el = $("tradeAmount"); el.value = Math.max(1, (+el.value || 1) + d); }
 function setTimePreset(m) { $("tradeTime").value = m; }
@@ -833,8 +1039,9 @@ async function placeTrade(dir) {
   const amount = +$("tradeAmount").value;
   const minutes = +$("tradeTime").value;
   if (!(amount > 0)) return toast("Amount must be > 0", "err");
+  if (!state.sessionId) { toast("Connect your IQ account first", "err"); openModal("account"); return; }
   const payload = {
-    session_id: state.sessionId || null,
+    session_id: state.sessionId,
     pair: cfg.pair,
     direction: dir,
     amount,
@@ -846,7 +1053,7 @@ async function placeTrade(dir) {
   const prev = btn.innerHTML;
   btn.innerHTML = '<span class="text-sm font-bold">Placing…</span>';
   try {
-    const r = await api("/api/trade", { method: "POST", body: JSON.stringify(payload) });
+    await api("/api/trade", { method: "POST", body: JSON.stringify(payload) });
     toast(`${dir} ${cfg.pair} · $${amount} · ${minutes}m`, "ok");
     loadTrades();
   } catch (e) {
@@ -857,6 +1064,7 @@ async function placeTrade(dir) {
 }
 window.placeTrade = placeTrade;
 
+// ── Trades ──────────────────────────────────────────────────────────────
 function switchTradeTab(which) {
   $("tab-opened").className = which === "opened" ? "tab-active flex-1 py-2.5 rounded-xl text-sm font-medium border" : "tab-inactive flex-1 py-2.5 rounded-xl text-sm font-medium border";
   $("tab-closed").className = which === "closed" ? "tab-active flex-1 py-2.5 rounded-xl text-sm font-medium border" : "tab-inactive flex-1 py-2.5 rounded-xl text-sm font-medium border";
@@ -869,7 +1077,7 @@ async function loadTrades() {
   try {
     const r = await api("/api/trades?limit=50");
     state.trades = r.trades || [];
-    state.tradesSummary = r.summary || { wins: 0, losses: 0, win_rate: 0, total_pnl: 0 };
+    state.tradesSummary = r.summary || { wins: 0, losses: 0, win_rate: 0, total_pnl: 0, total: 0 };
   } catch (e) {
     console.warn("loadTrades:", e.message);
   }
@@ -921,7 +1129,6 @@ function renderTrades() {
 
 function renderTradeRow(t) {
   const isBuy = t.direction === "BUY";
-
   let statusLabel = t.status.toUpperCase();
   let statusClass = "text-gray-400";
   if (t.status === "open")                { statusLabel = "LIVE";      statusClass = "text-blue-400"; }
@@ -968,6 +1175,7 @@ function renderTradeRow(t) {
   `;
 }
 
+// ── Signals ─────────────────────────────────────────────────────────────
 async function loadSignals() {
   try {
     const r = await api("/api/signals?status=pending&limit=50");
@@ -1022,7 +1230,7 @@ async function confirmSignal(id, pair, direction, minutes) {
   const amount = +(prompt(`Amount for ${pair} ${direction} (${minutes}m)?`, "1") || 0);
   if (!(amount > 0)) return;
   try {
-    const r = await api(`/api/signals/${id}/confirm`, {
+    await api(`/api/signals/${id}/confirm`, {
       method: "POST",
       body: JSON.stringify({ session_id: state.sessionId, amount }),
     });
@@ -1088,6 +1296,7 @@ function saveSettings() {
 }
 window.saveSettings = saveSettings;
 
+// ── Boot ────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   $("currentPair").textContent = cfg.pair;
   $("tfBadge").textContent = cfg.tf;
@@ -1097,9 +1306,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadCandles();
   await loadSignals();
   await loadTrades();
+  loadPayout();
   state.signalsTimer = setInterval(loadSignals, 10000);
   setInterval(pollCandles, 5000);
   setInterval(loadTrades, 8000);
+  setInterval(loadPayout, 30000);
 });
 })();
 </script>
