@@ -1,5 +1,5 @@
 """
-QT Trading — Signal engine (from the Telegram bot).
+QT Trading - Signal engine (from the Telegram bot).
 
 Same rules as the bot:
   - yfinance 5m + 1m candles
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,8 +25,6 @@ import yfinance as yf
 
 logger = logging.getLogger("qt.signal_engine")
 
-
-# ── Config ───────────────────────────────────────────────────────────────────
 
 OANDA_API_KEY = os.environ.get("OANDA_API_KEY", "")
 OANDA_ACCOUNT_ID = os.environ.get("OANDA_ACCOUNT_ID", "")
@@ -39,9 +37,6 @@ DEFAULT_RSI_SELL_MIN = int(os.environ.get("RSI_SELL_MIN", "60"))
 DEFAULT_RSI_SELL_MAX = int(os.environ.get("RSI_SELL_MAX", "70"))
 
 MIN_DIFF = float(os.environ.get("MIN_DIFF", "0.00001"))
-
-
-# ── Data structures ──────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -65,8 +60,6 @@ class GeneratedSignal:
         return asdict(self)
 
 
-# ── Per-pair settings ────────────────────────────────────────────────────────
-
 pair_settings: Dict[str, Dict[str, int]] = {}
 
 
@@ -86,10 +79,7 @@ def get_effective_settings(symbol: str) -> Dict[str, int]:
     }
 
 
-# ── Indicators (identical to the bot) ────────────────────────────────────────
-
-
-def calculate_strategy(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+def calculate_strategy(df: pd.DataFrame):
     fast_ema = df["Close"].ewm(span=12, adjust=False).mean()
     slow_ema = df["Close"].ewm(span=26, adjust=False).mean()
     macd = fast_ema - slow_ema
@@ -113,9 +103,6 @@ def latest_1m_cross(diff_series: pd.Series) -> Optional[str]:
         elif diffs[i - 1] > 0 and diffs[i] < 0:
             return "bear"
     return None
-
-
-# ── Spread filters ───────────────────────────────────────────────────────────
 
 
 def is_spread_present_5m(symbol: str) -> bool:
@@ -147,8 +134,8 @@ def get_oanda_spread_pips(symbol: str) -> Optional[float]:
     quote = instrument[3:]
     oanda_symbol = f"{base}_{quote}"
     try:
-        url = f"https://api-fxtrade.oanda.com/v3/instruments/{oanda_symbol}/pricing"
-        headers = {"Authorization": f"Bearer {OANDA_API_KEY}"}
+        url = "https://api-fxtrade.oanda.com/v3/instruments/" + oanda_symbol + "/pricing"
+        headers = {"Authorization": "Bearer " + OANDA_API_KEY}
         params = {"instruments": oanda_symbol}
         r = requests.get(url, headers=headers, params=params, timeout=5)
         data = r.json()
@@ -164,8 +151,6 @@ def get_oanda_spread_pips(symbol: str) -> Optional[float]:
         logger.error("OANDA spread check error %s: %s", symbol, e)
         return None
 
-
-# ── Compression filter ───────────────────────────────────────────────────────
 
 compression_counter: Dict[str, int] = {}
 compression_blocked: Dict[str, bool] = {}
@@ -198,20 +183,27 @@ def check_compression(symbol: str, h: pd.Series) -> bool:
         return False
 
 
-# ── Confidence scoring ───────────────────────────────────────────────────────
-
-
-def compute_confidence(direction: str, rsi_val: float, diff_5m: float, diff_1m: float) -> int:
+def compute_confidence(direction, rsi_val, diff_5m):
     if direction == "BUY":
         band_center = (DEFAULT_RSI_BUY_MIN + DEFAULT_RSI_BUY_MAX) / 2
     else:
         band_center = (DEFAULT_RSI_SELL_MIN + DEFAULT_RSI_SELL_MAX) / 2
     rsi_score = max(0.0, 1.0 - abs(rsi_val - band_center) / 20.0)
-    diff_score = min(1.0, abs(diff_5m) / (5 * MIN_DIFF) if MIN_DIFF > 0 else 0.0)
-    return int(max(0, min(99, 55 + 25 * rsi_score + 20 * diff_score)))
+    if MIN_DIFF > 0:
+        diff_score = min(1.0, abs(diff_5m) / (5 * MIN_DIFF))
+    else:
+        diff_score = 0.0
+    score = 55 + 25 * rsi_score + 20 * diff_score
+    return int(max(0, min(99, score)))
 
 
-# ── Core generator ───────────────────────────────────────────────────────────
+def _build_reason(rsi_val, diff_5m, diff_1m):
+    parts = []
+    parts.append("MACD cross + 1m confirm")
+    parts.append("RSI " + str(round(rsi_val, 1)))
+    parts.append("diff5m " + str(round(diff_5m, 5)))
+    parts.append("diff1m " + str(round(diff_1m, 5)))
+    return " | ".join(parts)
 
 
 def generate_signal(symbol: str) -> Optional[GeneratedSignal]:
@@ -262,15 +254,44 @@ def generate_signal(symbol: str) -> Optional[GeneratedSignal]:
         if not (confirm_bull or confirm_bear):
             return None
 
-        direction = "BUY" if confirm_bull else "SELL"
+        if confirm_bull:
+            direction = "BUY"
+        else:
+            direction = "SELL"
+
         pair_display = symbol.replace("=X", "")
 
-        confidence = compute_confidence(
-            direction=direction,
-            rsi_val=rsi_val,
-            diff_5m=float(prev_diff),
-            diff_1m=float(diff_1m_series.iloc[-1]),
-        )
+        confidence = compute_confidence(direction, rsi_val, float(prev_diff))
+        reason = _build_reason(rsi_val, float(prev_diff), float(diff_1m_series.iloc[-1]))
 
-        reason = (
-            f"MACD cross + 1m confirm · RSI {rsi_val
+        return GeneratedSignal(
+            symbol=symbol,
+            pair=pair_display,
+            direction=direction,
+            minutes=5,
+            confidence=confidence,
+            reason=reason,
+            macd_5m=float(m.iloc[-1]),
+            signal_5m=float(s.iloc[-1]),
+            diff_5m=float(prev_diff),
+            macd_1m=float(m_1m.iloc[-1]),
+            signal_1m=float(s_1m.iloc[-1]),
+            diff_1m=float(diff_1m_series.iloc[-1]),
+            rsi_5m=rsi_val,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except Exception as e:
+        logger.error("generate_signal error %s: %s", symbol, e)
+        return None
+
+
+def scan_symbols(symbols: List[str]) -> List[GeneratedSignal]:
+    out = []
+    for sym in symbols:
+        try:
+            sig = generate_signal(sym)
+            if sig:
+                out.append(sig)
+        except Exception as e:
+            logger.error("scan error %s: %s", sym, e)
+    return out
