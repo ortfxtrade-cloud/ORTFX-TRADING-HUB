@@ -73,19 +73,17 @@
 
   #tvChart, #rsiChart, #macdChart { position: absolute; inset: 0; }
 
-  /* Scrollable body area above the sticky trade panel */
   #classicScroll {
-    height: calc(100vh - 64px - 210px); /* top nav − bottom nav − sticky trade panel */
+    height: calc(100vh - 64px - 200px);
     overflow-y: auto;
     overscroll-behavior: contain;
   }
 
-  /* Sticky trade panel */
   #tradePanelSticky {
     position: fixed;
     left: 50%;
     transform: translateX(-50%);
-    bottom: 68px; /* above bottom nav */
+    bottom: 68px;
     width: 100%;
     max-width: 430px;
     padding: 8px 12px 10px;
@@ -95,7 +93,7 @@
   }
 
   .toast {
-    position: fixed; left: 50%; bottom: 300px;
+    position: fixed; left: 50%; bottom: 280px;
     transform: translateX(-50%);
     background: #1a2433; border: 1px solid #2a3544;
     color: #fff; font-size: 12px;
@@ -148,7 +146,6 @@
 <!-- SCREEN: CLASSIC -->
 <div id="screen-classic" class="screen active">
 
-  <!-- Scrollable chart + pair area -->
   <div id="classicScroll">
     <div class="px-3 mt-1">
       <div class="flex items-center gap-2">
@@ -166,7 +163,7 @@
       </div>
     </div>
 
-    <!-- Price chart (auto-shrinks when indicators open) -->
+    <!-- Price chart -->
     <div id="pricePane" class="relative mx-1 mt-1 rounded-t-lg overflow-hidden border border-[#1a2433]" style="height:280px; border-bottom-width:0;">
       <div id="tvChart"></div>
       <div class="absolute right-1.5 top-1.5 z-30 flex flex-col gap-1.5">
@@ -199,19 +196,19 @@
       <div id="chartStatus" class="absolute left-2 bottom-2 z-30 text-[10px] text-gray-500 bg-[#0e141d]/80 px-2 py-1 rounded-md">connecting…</div>
     </div>
 
-    <!-- RSI pane (hidden by default) -->
+    <!-- RSI pane -->
     <div id="rsiPane" class="relative mx-1 overflow-hidden border-x border-[#1a2433] hidden" style="height:80px; border-bottom-width:0;">
       <div id="rsiChart"></div>
       <div class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">RSI 14 · 30 / 50 / 70</div>
     </div>
 
-    <!-- MACD pane (hidden by default) -->
+    <!-- MACD pane -->
     <div id="macdPane" class="relative mx-1 overflow-hidden border border-[#1a2433] rounded-b-lg hidden" style="height:90px;">
       <div id="macdChart"></div>
       <div class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">MACD 12 / 26 / 9</div>
     </div>
 
-    <!-- Sentiment bar -->
+    <!-- Sentiment -->
     <div class="px-3 mt-2">
       <div class="relative h-1.5 rounded-full overflow-hidden bg-[#1a2433]">
         <div id="bullBar" class="absolute inset-y-0 left-0 bg-green-500 rounded-l-full" style="width:50%"></div>
@@ -226,7 +223,7 @@
     <div class="h-4"></div>
   </div>
 
-  <!-- Sticky trade panel — always visible above the bottom nav -->
+  <!-- Sticky trade panel -->
   <div id="tradePanelSticky">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -512,7 +509,7 @@ function toast(msg, kind = "") {
   t.textContent = msg;
   t.className = "toast show " + kind;
   clearTimeout(t._t);
-  t._t = setTimeout(() => { t.className = "toast " + kind; }, 2600);
+  t._t = setTimeout(() => { t.className = "toast " + kind; }, 3200);
 }
 
 async function api(path, opts = {}) {
@@ -542,7 +539,6 @@ function switchScreen(name) {
   document.querySelectorAll("[data-nav]").forEach(b => {
     b.classList.toggle("nav-active", b.dataset.nav === name);
   });
-  // hide sticky trade panel when leaving classic
   const tp = $("tradePanelSticky");
   if (tp) tp.style.display = (name === "classic") ? "block" : "none";
 
@@ -1054,6 +1050,7 @@ async function placeTrade(dir) {
   const minutes = +$("tradeTime").value;
   if (!(amount > 0)) return toast("Amount must be > 0", "err");
 
+  // Ensure session
   if (!state.sessionId) {
     try {
       const r = await api("/api/iq/current");
@@ -1061,7 +1058,6 @@ async function placeTrade(dir) {
         state.sessionId = r.session_id;
         state.balance = r.balance;
         state.currency = r.currency || "USD";
-        state.accountEmail = r.email;
         renderBalance();
         renderAccountModal();
       } else {
@@ -1074,6 +1070,23 @@ async function placeTrade(dir) {
       openModal("account");
       return;
     }
+  }
+
+  // Pre-flight availability check
+  try {
+    const avail = await api(`/api/iq/available?pair=${encodeURIComponent(cfg.pair)}&minutes=${minutes}`);
+    console.log("availability:", avail);
+    if (!avail.tradeable) {
+      const why = avail.reason || `${cfg.pair} is not tradeable right now`;
+      toast(why, "err");
+      return;
+    }
+    if (avail.payout != null && avail.payout < 30) {
+      toast(`${cfg.pair} payout too low (${avail.payout}%) — try another pair`, "err");
+      return;
+    }
+  } catch (e) {
+    console.warn("availability check failed, proceeding:", e.message);
   }
 
   const payload = {
@@ -1095,7 +1108,11 @@ async function placeTrade(dir) {
     if (r.balance != null) { state.balance = r.balance; renderBalance(); }
     loadTrades();
   } catch (e) {
-    toast("Trade failed: " + e.message, "err");
+    let msg = e.message;
+    if (/not available/i.test(msg)) {
+      msg = `${cfg.pair} closed on IQ right now. Try another pair or duration.`;
+    }
+    toast(msg, "err");
     console.error("trade error:", e);
   } finally {
     btn.innerHTML = prev;
