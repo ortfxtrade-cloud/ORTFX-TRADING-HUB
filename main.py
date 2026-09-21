@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -67,33 +68,21 @@ if not API_KEY and ENV == "production":
     raise RuntimeError("BACKEND_API_KEY must be set in production")
 
 
-# ── Background: trade result resolver ────────────────────────────────────────
-
-
 async def _trade_result_resolver(stop: asyncio.Event) -> None:
-    """
-    Every RESULT_POLL_INTERVAL seconds:
-      1. Move expired 'open' trades → 'pending_result'
-      2. Ask IQ for the result of every 'pending_result' trade
-      3. Resolve as won/lost, or void if too much time has passed
-    """
     logger.info(
         "Trade resolver started (poll=%ds, void_after=%ds)",
         RESULT_POLL_INTERVAL, RESULT_VOID_AFTER,
     )
-
     while not stop.is_set():
         try:
-            # Stage 1: advance expired open trades
             db = SessionLocal()
             try:
-                n_advanced = advance_expired_trades(db)
-                if n_advanced:
-                    logger.info("Advanced %d trade(s) to pending_result", n_advanced)
+                n = advance_expired_trades(db)
+                if n:
+                    logger.info("Advanced %d trade(s) to pending_result", n)
             finally:
                 db.close()
 
-            # Stage 2: query IQ for results
             sessions = iq.list_active_sessions()
             live = next((s for s in sessions if s["alive"]), None)
             session_id = live["session_id"] if live else None
@@ -106,17 +95,15 @@ async def _trade_result_resolver(stop: asyncio.Event) -> None:
                         continue
                     if not session_id:
                         continue
-
                     result = iq.get_order_result(session_id, trade.iq_order_id)
-
                     if result and result.get("status") == "closed":
                         won = result.get("won")
                         profit = result.get("profit")
                         if profit is None and won is not None:
-                            if won:
-                                profit = round(trade.amount * (trade.payout_pct / 100.0), 2)
-                            else:
-                                profit = -trade.amount
+                            profit = (
+                                round(trade.amount * (trade.payout_pct / 100.0), 2)
+                                if won else -trade.amount
+                            )
                         resolve_trade(db, trade.id, won=won, profit=profit)
                         logger.info(
                             "Resolved trade #%d %s %s → won=%s profit=%s",
@@ -125,7 +112,6 @@ async def _trade_result_resolver(stop: asyncio.Event) -> None:
                     elif result and result.get("status") == "open":
                         continue
                     else:
-                        # No usable answer. Void after grace period.
                         if trade.expires_at:
                             age = (datetime.utcnow() - trade.expires_at).total_seconds()
                             if age > RESULT_VOID_AFTER:
@@ -148,14 +134,10 @@ async def _trade_result_resolver(stop: asyncio.Event) -> None:
     logger.info("Trade resolver stopped")
 
 
-# ── Auto connect ─────────────────────────────────────────────────────────────
-
-
 async def _auto_connect_iq() -> None:
     if not (IQ_AUTO_CONNECT and IQ_EMAIL and IQ_PASSWORD):
         logger.info("IQ auto-connect skipped (no creds or disabled)")
         return
-
     for attempt in range(1, 4):
         ok, payload = iq.connect_iq(IQ_EMAIL, IQ_PASSWORD, IQ_MODE)
         if ok:
@@ -178,15 +160,9 @@ async def _auto_connect_iq() -> None:
             finally:
                 db.close()
             return
-        logger.warning(
-            "IQ auto-connect attempt %d failed: %s", attempt, payload.get("message")
-        )
+        logger.warning("IQ auto-connect attempt %d failed: %s", attempt, payload.get("message"))
         await asyncio.sleep(5)
-
     logger.error("IQ auto-connect gave up after 3 attempts")
-
-
-# ── Lifespan ─────────────────────────────────────────────────────────────────
 
 
 @asynccontextmanager
@@ -374,6 +350,42 @@ def api_iq_current(_: None = Depends(require_api_key)):
         "currency": sess.currency,
         "account_type": sess.account_type,
     }
+
+
+@app.get("/api/iq/candles")
+def api_iq_candles(
+    pair: str,
+    tf: str = "M1",
+    limit: int = 200,
+    _: None = Depends(require_api_key),
+):
+    """Fetch candles from the live IQ Option session."""
+    sess = iq.get_first_session()
+    if not sess or not sess.is_alive():
+        raise HTTPException(410, "No live IQ session")
+
+    active = pair.upper().replace("/", "").replace(" ", "")
+    tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
+    limit = max(10, min(int(limit or 200), 1000))
+
+    try:
+        raw = sess.api.get_candles(active, tf_seconds, limit, time.time())
+    except Exception as e:
+        raise HTTPException(502, f"IQ candle error: {e}")
+
+    if not raw:
+        return {"status": "success", "candles": []}
+
+    candles = []
+    for c in raw:
+        candles.append({
+            "time": int(c.get("at") or c.get("from") or 0),
+            "open": float(c.get("open") or 0),
+            "high": float(c.get("max") or c.get("high") or 0),
+            "low": float(c.get("min") or c.get("low") or 0),
+            "close": float(c.get("close") or 0),
+        })
+    return {"status": "success", "pair": pair, "tf": tf.upper(), "candles": candles}
 
 
 # ── Signals ──────────────────────────────────────────────────────────────────
@@ -598,7 +610,6 @@ def api_list_trades(
 
 @app.post("/api/trades/refresh")
 async def api_refresh_trades(_: None = Depends(require_api_key)):
-    """Force one pass of the trade resolver right now."""
     sessions = iq.list_active_sessions()
     live = next((s for s in sessions if s["alive"]), None)
     session_id = live["session_id"] if live else None
@@ -684,7 +695,7 @@ def api_place_trade(
     }
 
 
-# ── Candles ──────────────────────────────────────────────────────────────────
+# ── Fallback candles (yfinance, used only if IQ session unavailable) ────────
 
 
 TF_TO_YF = {
