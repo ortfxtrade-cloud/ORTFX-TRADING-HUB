@@ -1,12 +1,5 @@
 """
-QT Trading backend — FastAPI
-
-Endpoints expected by the frontend (index.html):
-  POST /api/iq/connect      { email, password, mode }
-  POST /api/iq/disconnect  { session_id }
-
-Extra helpers for signals, balance, and health.
-Serves index.html at / so UI + API share the same Render URL.
+QT Trading — FastAPI (UI + API)
 """
 
 from __future__ import annotations
@@ -14,7 +7,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -47,11 +40,7 @@ logger = logging.getLogger("qt.main")
 
 API_KEY = os.getenv("BACKEND_API_KEY", "").strip()
 
-app = FastAPI(
-    title="QT Trading API",
-    description="Backend for IQ Option connect + signals storage",
-    version="1.0.0",
-)
+app = FastAPI(title="QT Trading API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,12 +64,10 @@ def require_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
-# ---------- Schemas ----------
-
 class ConnectBody(BaseModel):
     email: str
     password: str
-    mode: str = Field(default="demo", description="demo | real")
+    mode: str = Field(default="demo")
 
 
 class DisconnectBody(BaseModel):
@@ -108,11 +95,8 @@ class TradeBody(BaseModel):
     place_on_iq: bool = False
 
 
-# ---------- UI + Health ----------
-
 @app.get("/")
 def serve_ui():
-    """Serve the trading website UI (index.html) at the root URL."""
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
     if os.path.exists(path):
         return FileResponse(path, media_type="text/html")
@@ -128,8 +112,6 @@ def health():
     }
 
 
-# ---------- IQ Option ----------
-
 @app.post("/api/iq/connect")
 def api_iq_connect(
     body: ConnectBody,
@@ -138,10 +120,7 @@ def api_iq_connect(
 ):
     ok, payload = iq.connect_iq(body.email, body.password, body.mode)
     if not ok:
-        return {
-            "status": "error",
-            "message": payload.get("message", "Connection failed"),
-        }
+        return {"status": "error", "message": payload.get("message", "Connection failed")}
 
     upsert_account(
         db,
@@ -153,7 +132,6 @@ def api_iq_connect(
         currency=payload.get("currency") or "USD",
         connected=True,
     )
-
     return payload
 
 
@@ -169,10 +147,7 @@ def api_iq_disconnect(
 
 
 @app.get("/api/iq/balance")
-def api_iq_balance(
-    session_id: str,
-    _: None = Depends(require_api_key),
-):
+def api_iq_balance(session_id: str, _: None = Depends(require_api_key)):
     bal = iq.refresh_balance(session_id)
     if bal is None:
         raise HTTPException(status_code=404, detail="Session not found or disconnected")
@@ -189,8 +164,6 @@ def api_iq_balance(
 def api_iq_sessions(_: None = Depends(require_api_key)):
     return {"sessions": iq.list_active_sessions()}
 
-
-# ---------- Signals ----------
 
 @app.post("/api/signals")
 def api_create_signal(
@@ -269,8 +242,6 @@ def api_clear_signals(
     return {"status": "success", "deleted": n}
 
 
-# ---------- Trade ----------
-
 @app.post("/api/trade")
 def api_place_trade(
     body: TradeBody,
@@ -318,7 +289,6 @@ def api_place_trade(
 
 if __name__ == "__main__":
     import uvicorn
-
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     uvicorn.run("main:app", host=host, port=port, reload=True)
