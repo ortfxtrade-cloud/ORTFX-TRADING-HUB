@@ -6,6 +6,7 @@ Endpoints expected by the frontend (index.html):
   POST /api/iq/disconnect  { session_id }
 
 Extra helpers for signals, balance, and health.
+Serves index.html at / so UI + API share the same Render URL.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -87,7 +89,7 @@ class DisconnectBody(BaseModel):
 
 class SignalBody(BaseModel):
     pair: str
-    direction: str  # BUY | SELL
+    direction: str
     minutes: int = 5
     confidence: str = "—"
     raw_text: Optional[str] = None
@@ -106,11 +108,15 @@ class TradeBody(BaseModel):
     place_on_iq: bool = False
 
 
-# ---------- Health ----------
+# ---------- UI + Health ----------
 
 @app.get("/")
-def root():
-    return {"service": "QT Trading API", "status": "ok"}
+def serve_ui():
+    """Serve the trading website UI (index.html) at the root URL."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
+    if os.path.exists(path):
+        return FileResponse(path, media_type="text/html")
+    return {"service": "QT Trading API", "status": "ok", "note": "index.html not found"}
 
 
 @app.get("/health")
