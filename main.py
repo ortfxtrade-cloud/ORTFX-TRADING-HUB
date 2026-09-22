@@ -358,9 +358,6 @@ def api_iq_current(_: None = Depends(require_api_key)):
 
 @app.get("/api/iq/instruments")
 def api_iq_instruments(_: None = Depends(require_api_key)):
-    """
-    Every asset IQ currently offers, with payout, open state, durations.
-    """
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
@@ -457,86 +454,6 @@ def api_iq_instruments(_: None = Depends(require_api_key)):
         "count": len(out),
         "open_count": open_count,
         "instruments": out,
-    }
-
-
-@app.get("/api/iq/available")
-def api_iq_available(
-    pair: str,
-    minutes: int = 1,
-    _: None = Depends(require_api_key),
-):
-    """Pre-flight check: is this pair tradeable right now?"""
-    sess = iq.get_first_session()
-    if not sess or not sess.is_alive():
-        raise HTTPException(410, "No live IQ session")
-
-    active = pair.upper().replace("/", "").replace(" ", "")
-    account_type = sess.account_type
-
-    in_list = False
-    try:
-        actives = sess.api.get_all_ACTIVES_OPCODE() or {}
-        in_list = active in actives
-    except Exception:
-        pass
-
-    payout = None
-    try:
-        profits = sess.api.get_all_profit() or {}
-        data = profits.get(active)
-        if isinstance(data, dict):
-            pct = data.get(account_type) or data.get("turbo") or data.get("binary")
-            if pct:
-                payout = round(float(pct) * 100, 1)
-        elif isinstance(data, (int, float)) and data:
-            payout = round(float(data) * 100, 1)
-    except Exception:
-        pass
-
-    durations = []
-    try:
-        if hasattr(sess.api, "get_all_open_time"):
-            otime = sess.api.get_all_open_time() or {}
-            for kind in ("turbo", "binary"):
-                node = otime.get(kind, {}).get(active)
-                if isinstance(node, dict):
-                    d = node.get("durations") or node.get("min_duration")
-                    if isinstance(d, list) and d:
-                        durations = [int(x) for x in d if str(x).isdigit()]
-                    elif isinstance(d, int):
-                        durations = [d]
-                    if durations:
-                        break
-    except Exception:
-        pass
-
-    if not durations:
-        durations = [1, 2, 3, 5, 10, 15, 30, 60]
-
-    tradeable = bool(in_list or payout)
-    duration_ok = (minutes in durations) if durations else True
-
-    reason = None
-    if not tradeable:
-        reason = f"{active} not in IQ's tradeable list (market may be closed)"
-    elif payout is not None and payout <= 0:
-        reason = f"{active} has 0% payout right now"
-    elif not duration_ok:
-        reason = f"{active} doesn't support {minutes}m — try {sorted(set(durations))[:5]}"
-
-    return {
-        "status": "success",
-        "pair": active,
-        "tradeable": tradeable and duration_ok and (payout is None or payout > 0),
-        "in_asset_list": in_list,
-        "payout": payout,
-        "durations": sorted(set(durations)),
-        "minutes_requested": minutes,
-        "duration_ok": duration_ok,
-        "account_type": account_type,
-        "mode": sess.mode,
-        "reason": reason,
     }
 
 
@@ -696,11 +613,7 @@ def api_iq_indicators(
     }
 
     if not raw:
-        return {
-            "status": "success", "candles": 0,
-            "rsi": [], "macd": [], "signal": [], "hist": [],
-            "params": params,
-        }
+        return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": [], "params": params}
 
     rows = []
     for c in raw:
@@ -782,7 +695,7 @@ def api_iq_payouts(_: None = Depends(require_api_key)):
     return {"status": "success", "payouts": out}
 
 
-# ── Profile stats ───────────────────────────────────────────────────────────
+# ── Profile ─────────────────────────────────────────────────────────────────
 
 
 @app.get("/api/profile/stats")
