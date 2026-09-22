@@ -145,7 +145,6 @@
 
 <!-- SCREEN: CLASSIC -->
 <div id="screen-classic" class="screen active">
-
   <div id="classicScroll">
     <div class="px-3 mt-1">
       <div class="flex items-center gap-2">
@@ -163,7 +162,6 @@
       </div>
     </div>
 
-    <!-- Price chart -->
     <div id="pricePane" class="relative mx-1 mt-1 rounded-t-lg overflow-hidden border border-[#1a2433]" style="height:280px; border-bottom-width:0;">
       <div id="tvChart"></div>
       <div class="absolute right-1.5 top-1.5 z-30 flex flex-col gap-1.5">
@@ -196,19 +194,16 @@
       <div id="chartStatus" class="absolute left-2 bottom-2 z-30 text-[10px] text-gray-500 bg-[#0e141d]/80 px-2 py-1 rounded-md">connecting…</div>
     </div>
 
-    <!-- RSI pane -->
     <div id="rsiPane" class="relative mx-1 overflow-hidden border-x border-[#1a2433] hidden" style="height:80px; border-bottom-width:0;">
       <div id="rsiChart"></div>
-      <div class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">RSI 14 · 30 / 50 / 70</div>
+      <div id="rsiLabel" class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">RSI 14 · 30 / 50 / 70</div>
     </div>
 
-    <!-- MACD pane -->
     <div id="macdPane" class="relative mx-1 overflow-hidden border border-[#1a2433] rounded-b-lg hidden" style="height:90px;">
       <div id="macdChart"></div>
-      <div class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">MACD 12 / 26 / 9</div>
+      <div id="macdLabel" class="absolute left-2 top-1 z-30 text-[10px] text-gray-500">MACD 12 / 26 / 9</div>
     </div>
 
-    <!-- Sentiment -->
     <div class="px-3 mt-2">
       <div class="relative h-1.5 rounded-full overflow-hidden bg-[#1a2433]">
         <div id="bullBar" class="absolute inset-y-0 left-0 bg-green-500 rounded-l-full" style="width:50%"></div>
@@ -223,7 +218,6 @@
     <div class="h-4"></div>
   </div>
 
-  <!-- Sticky trade panel -->
   <div id="tradePanelSticky">
     <div class="grid grid-cols-2 gap-2 mb-2">
       <div>
@@ -411,8 +405,8 @@
 
 <div id="modal-watchlist" class="modal-backdrop" onclick="if(event.target===this)closeModal('watchlist')">
   <div class="modal-panel">
-    <h2 class="text-lg font-semibold mb-3">Select Pair</h2>
-    <div id="pairList" class="space-y-1"></div>
+    <h2 class="text-lg font-semibold mb-3">Select Instrument</h2>
+    <div id="pairList" class="space-y-1 max-h-[60vh] overflow-y-auto no-scrollbar"></div>
     <button onclick="closeModal('watchlist')" class="w-full mt-3 py-3 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm">Close</button>
   </div>
 </div>
@@ -428,6 +422,7 @@
 <div id="modal-indicators" class="modal-backdrop" onclick="if(event.target===this)closeModal('indicators')">
   <div class="modal-panel">
     <h2 class="text-lg font-semibold mb-3">Indicators</h2>
+
     <label class="flex items-center justify-between py-3 border-b border-[#1f2a3a]">
       <span class="text-sm">EMA 20</span>
       <input id="ind-ema20" type="checkbox" onchange="toggleEma20(this.checked)" class="w-5 h-5 accent-green-500">
@@ -436,15 +431,56 @@
       <span class="text-sm">EMA 50</span>
       <input id="ind-ema50" type="checkbox" onchange="toggleEma50(this.checked)" class="w-5 h-5 accent-green-500">
     </label>
-    <label class="flex items-center justify-between py-3 border-b border-[#1f2a3a]">
-      <span class="text-sm">RSI (14) — 30 / 50 / 70</span>
-      <input id="ind-rsi" type="checkbox" onchange="toggleRsi(this.checked)" class="w-5 h-5 accent-purple-500">
-    </label>
-    <label class="flex items-center justify-between py-3 border-b border-[#1f2a3a]">
-      <span class="text-sm">MACD (12/26/9)</span>
-      <input id="ind-macd" type="checkbox" onchange="toggleMacd(this.checked)" class="w-5 h-5 accent-blue-500">
-    </label>
-    <button onclick="closeModal('indicators')" class="w-full mt-3 py-3 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm">Close</button>
+
+    <div class="py-3 border-b border-[#1f2a3a]">
+      <label class="flex items-center justify-between mb-2">
+        <span class="text-sm">RSI</span>
+        <input id="ind-rsi" type="checkbox" onchange="toggleRsi(this.checked)" class="w-5 h-5 accent-purple-500">
+      </label>
+      <div class="grid grid-cols-4 gap-2">
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Period</div>
+          <input id="rsiPeriodInput" type="number" min="2" max="100" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Upper</div>
+          <input id="rsiUpperInput" type="number" min="50" max="100" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Middle</div>
+          <input id="rsiMiddleInput" type="number" min="0" max="100" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Lower</div>
+          <input id="rsiLowerInput" type="number" min="0" max="50" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+      </div>
+    </div>
+
+    <div class="py-3 border-b border-[#1f2a3a]">
+      <label class="flex items-center justify-between mb-2">
+        <span class="text-sm">MACD</span>
+        <input id="ind-macd" type="checkbox" onchange="toggleMacd(this.checked)" class="w-5 h-5 accent-blue-500">
+      </label>
+      <div class="grid grid-cols-3 gap-2">
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Fast</div>
+          <input id="macdFastInput" type="number" min="2" max="200" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Slow</div>
+          <input id="macdSlowInput" type="number" min="3" max="400" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+        <div>
+          <div class="text-[10px] text-gray-500 mb-1">Signal</div>
+          <input id="macdSignalInput" type="number" min="2" max="100" class="w-full input-box rounded-lg px-2 py-1.5 text-xs text-center outline-none">
+        </div>
+      </div>
+    </div>
+
+    <button onclick="applyIndicatorSettings()" class="w-full mt-3 py-3 rounded-xl bg-green-600 text-white font-semibold text-sm">Apply</button>
+    <button onclick="resetIndicatorSettings()" class="w-full mt-2 py-2.5 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm text-gray-300">Reset to defaults</button>
+    <button onclick="closeModal('indicators')" class="w-full mt-2 py-3 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm">Close</button>
   </div>
 </div>
 
@@ -500,6 +536,17 @@ const state = {
   rsiOn: false, macdOn: false,
   signals: [], trades: [], tradesSummary: null,
   signalsTimer: null,
+  _pollCount: 0,
+  _rsiLines: null,
+  ind: {
+    rsiPeriod: +localStorage.getItem("qt_rsi_period") || 14,
+    rsiUpper:  +localStorage.getItem("qt_rsi_upper")  || 70,
+    rsiMiddle: +localStorage.getItem("qt_rsi_middle") || 50,
+    rsiLower:  +localStorage.getItem("qt_rsi_lower")  || 30,
+    macdFast:  +localStorage.getItem("qt_macd_fast")  || 12,
+    macdSlow:  +localStorage.getItem("qt_macd_slow")  || 26,
+    macdSignal:+localStorage.getItem("qt_macd_signal")|| 9,
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -559,6 +606,7 @@ function openModal(name) {
   if (name === "timeframe") renderTfList();
   if (name === "account") renderAccountModal();
   if (name === "profile") renderProfile();
+  if (name === "indicators") populateIndicatorInputs();
   el.classList.add("open");
 }
 function closeModal(name) {
@@ -620,9 +668,11 @@ function initChart() {
     color: "#a78bfa", lineWidth: 2, priceLineVisible: false, lastValueVisible: true,
     priceFormat: { type: "price", precision: 1, minMove: 0.1 },
   });
-  rsiSeries.createPriceLine({ price: 70, color: "#ef5350", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "70" });
-  rsiSeries.createPriceLine({ price: 50, color: "#6b7280", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: "50" });
-  rsiSeries.createPriceLine({ price: 30, color: "#26a69a", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: "30" });
+  state._rsiLines = {
+    upper: rsiSeries.createPriceLine({ price: state.ind.rsiUpper, color: "#ef5350", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: String(state.ind.rsiUpper) }),
+    middle: rsiSeries.createPriceLine({ price: state.ind.rsiMiddle, color: "#6b7280", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: String(state.ind.rsiMiddle) }),
+    lower: rsiSeries.createPriceLine({ price: state.ind.rsiLower, color: "#26a69a", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: String(state.ind.rsiLower) }),
+  };
 
   const macdEl = $("macdChart");
   macdEl.innerHTML = "";
@@ -742,9 +792,61 @@ function updateIndBadge() {
   b.style.display = n ? "flex" : "none";
 }
 
+// ── Indicator settings ──────────────────────────────────────────────
+function populateIndicatorInputs() {
+  const p = state.ind;
+  $("rsiPeriodInput").value  = p.rsiPeriod;
+  $("rsiUpperInput").value   = p.rsiUpper;
+  $("rsiMiddleInput").value  = p.rsiMiddle;
+  $("rsiLowerInput").value   = p.rsiLower;
+  $("macdFastInput").value   = p.macdFast;
+  $("macdSlowInput").value   = p.macdSlow;
+  $("macdSignalInput").value = p.macdSignal;
+}
+
+function applyIndicatorSettings() {
+  const p = state.ind;
+  p.rsiPeriod   = Math.max(2,  Math.min(100, +$("rsiPeriodInput").value  || 14));
+  p.rsiUpper    = Math.max(50, Math.min(100, +$("rsiUpperInput").value   || 70));
+  p.rsiMiddle   = Math.max(0,  Math.min(100, +$("rsiMiddleInput").value  || 50));
+  p.rsiLower    = Math.max(0,  Math.min(50,  +$("rsiLowerInput").value   || 30));
+  p.macdFast    = Math.max(2,  Math.min(200, +$("macdFastInput").value   || 12));
+  p.macdSlow    = Math.max(p.macdFast + 1, Math.min(400, +$("macdSlowInput").value || 26));
+  p.macdSignal  = Math.max(2,  Math.min(100, +$("macdSignalInput").value || 9));
+
+  localStorage.setItem("qt_rsi_period",   p.rsiPeriod);
+  localStorage.setItem("qt_rsi_upper",    p.rsiUpper);
+  localStorage.setItem("qt_rsi_middle",   p.rsiMiddle);
+  localStorage.setItem("qt_rsi_lower",    p.rsiLower);
+  localStorage.setItem("qt_macd_fast",    p.macdFast);
+  localStorage.setItem("qt_macd_slow",    p.macdSlow);
+  localStorage.setItem("qt_macd_signal",  p.macdSignal);
+
+  populateIndicatorInputs();
+  loadIndicators();
+  toast("Indicator settings applied", "ok");
+}
+
+function resetIndicatorSettings() {
+  state.ind = {
+    rsiPeriod: 14, rsiUpper: 70, rsiMiddle: 50, rsiLower: 30,
+    macdFast: 12, macdSlow: 26, macdSignal: 9,
+  };
+  ["qt_rsi_period","qt_rsi_upper","qt_rsi_middle","qt_rsi_lower",
+   "qt_macd_fast","qt_macd_slow","qt_macd_signal"].forEach(k => localStorage.removeItem(k));
+  populateIndicatorInputs();
+  loadIndicators();
+  toast("Reset to defaults", "ok");
+}
+
+window.applyIndicatorSettings = applyIndicatorSettings;
+window.resetIndicatorSettings = resetIndicatorSettings;
+
+// ── Data loading ───────────────────────────────────────────────────────
 async function refetchEma(period) {
+  const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","");
   try {
-    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&total=500`);
+    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(rawSymbol)}&tf=${cfg.tf}&total=500`);
     return ema((r.candles || []), period);
   } catch { return []; }
 }
@@ -763,8 +865,9 @@ function setChartStatus(text) { const el = $("chartStatus"); if (el) el.textCont
 
 async function loadCandles() {
   setChartStatus("loading…");
+  const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","");
   try {
-    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&total=2000`);
+    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(rawSymbol)}&tf=${cfg.tf}&total=2000`);
     const candles = (r.candles || []).map(c => ({
       time: c.time, open: +c.open, high: +c.high, low: +c.low, close: +c.close,
     }));
@@ -797,16 +900,45 @@ async function loadCandles() {
 
 async function loadIndicators() {
   if (!state.rsiOn && !state.macdOn) return;
+  const p = state.ind;
+  const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","");
   try {
-    const r = await api(`/api/iq/indicators?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&total=500`);
+    const r = await api(
+      `/api/iq/indicators?pair=${encodeURIComponent(rawSymbol)}` +
+      `&tf=${cfg.tf}&total=500` +
+      `&rsi_period=${p.rsiPeriod}` +
+      `&rsi_upper=${p.rsiUpper}` +
+      `&rsi_middle=${p.rsiMiddle}` +
+      `&rsi_lower=${p.rsiLower}` +
+      `&macd_fast=${p.macdFast}` +
+      `&macd_slow=${p.macdSlow}` +
+      `&macd_signal=${p.macdSignal}`
+    );
+
     if (state.rsiOn && rsiSeries && Array.isArray(r.rsi) && r.rsi.length) {
-      rsiSeries.setData(r.rsi.map(p => ({ time: p.time, value: p.value })));
+      rsiSeries.setData(r.rsi.map(pt => ({ time: pt.time, value: pt.value })));
+      if (state._rsiLines) {
+        try { rsiSeries.removePriceLine(state._rsiLines.upper); } catch {}
+        try { rsiSeries.removePriceLine(state._rsiLines.middle); } catch {}
+        try { rsiSeries.removePriceLine(state._rsiLines.lower); } catch {}
+      }
+      state._rsiLines = {
+        upper: rsiSeries.createPriceLine({ price: p.rsiUpper,  color: "#ef5350", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: String(p.rsiUpper) }),
+        middle: rsiSeries.createPriceLine({ price: p.rsiMiddle, color: "#6b7280", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dotted, axisLabelVisible: true, title: String(p.rsiMiddle) }),
+        lower: rsiSeries.createPriceLine({ price: p.rsiLower,  color: "#26a69a", lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: String(p.rsiLower) }),
+      };
+      const lbl = $("rsiLabel");
+      if (lbl) lbl.textContent = `RSI ${p.rsiPeriod} · ${p.rsiLower} / ${p.rsiMiddle} / ${p.rsiUpper}`;
     }
+
     if (state.macdOn && macdHistSeries && Array.isArray(r.hist) && r.hist.length) {
-      macdHistSeries.setData(r.hist.map(p => ({ time: p.time, value: p.value, color: p.value >= 0 ? "#26a69a" : "#ef5350" })));
-      macdLineSeries.setData((r.macd || []).map(p => ({ time: p.time, value: p.value })));
-      macdSignalSeries.setData((r.signal || []).map(p => ({ time: p.time, value: p.value })));
+      macdHistSeries.setData(r.hist.map(pt => ({ time: pt.time, value: pt.value, color: pt.value >= 0 ? "#26a69a" : "#ef5350" })));
+      macdLineSeries.setData((r.macd || []).map(pt => ({ time: pt.time, value: pt.value })));
+      macdSignalSeries.setData((r.signal || []).map(pt => ({ time: pt.time, value: pt.value })));
+      const lbl = $("macdLabel");
+      if (lbl) lbl.textContent = `MACD ${p.macdFast} / ${p.macdSlow} / ${p.macdSignal}`;
     }
+
     if (rsiChart) rsiChart.timeScale().fitContent();
     if (macdChart) macdChart.timeScale().fitContent();
   } catch (e) {
@@ -815,8 +947,9 @@ async function loadIndicators() {
 }
 
 async function pollCandles() {
+  const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","");
   try {
-    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(cfg.pair)}&tf=${cfg.tf}&limit=5`);
+    const r = await api(`/api/iq/candles?pair=${encodeURIComponent(rawSymbol)}&tf=${cfg.tf}&limit=5`);
     const rows = r.candles || [];
     if (rows.length) {
       const last = rows[rows.length - 1];
@@ -825,6 +958,10 @@ async function pollCandles() {
         open: +last.open, high: +last.high, low: +last.low, close: +last.close,
       });
       updateSentimentTick(+last.close, +last.open);
+      state._pollCount = (state._pollCount || 0) + 1;
+      if ((state.rsiOn || state.macdOn) && state._pollCount % 2 === 0) {
+        loadIndicators();
+      }
     }
   } catch {}
 }
@@ -849,26 +986,112 @@ function renderSentiment(bullPct) {
   $("bearPct").textContent = bear + "%";
 }
 
-// ── Pairs & timeframes ──────────────────────────────────────────────────
-const PAIRS = [
-  "EUR/USD","GBP/USD","USD/JPY","USD/CHF","AUD/USD","USD/CAD","NZD/USD",
-  "EUR/GBP","EUR/JPY","GBP/JPY","EUR/AUD","EUR/CAD","AUD/JPY",
-  "BTC/USD","ETH/USD",
-];
+// ── Instruments / Watchlist ─────────────────────────────────────────
+let _instrumentsCache = [];
 
-function renderPairList() {
-  $("pairList").innerHTML = PAIRS.map(p => `
-    <button onclick="selectPair('${p}')" class="w-full flex items-center justify-between px-3 py-3 rounded-xl ${p === cfg.pair ? 'bg-[#1e3a5f] border border-blue-500/40' : 'bg-[#0e141d] border border-[#1f2a3a]'}">
-      <span class="text-sm font-medium">${p}</span>
-      ${p === cfg.pair ? '<span class="text-[10px] text-blue-400">ACTIVE</span>' : ''}
-    </button>`).join("");
+async function renderPairList() {
+  const el = $("pairList");
+  el.innerHTML = '<div class="text-center py-6 text-xs text-gray-500">Loading instruments…</div>';
+
+  try {
+    const r = await api("/api/iq/instruments");
+    _instrumentsCache = r.instruments || [];
+
+    const openItems = _instrumentsCache.filter(i => i.open);
+    const closedItems = _instrumentsCache.filter(i => !i.open);
+
+    if (!openItems.length) {
+      el.innerHTML = '<div class="text-center py-8 text-xs text-gray-500">No instruments are open right now</div>';
+      return;
+    }
+
+    const groups = {
+      forex: "Forex",
+      forex_otc: "Forex OTC (24/7)",
+      crypto: "Crypto",
+      commodity: "Commodities",
+      index: "Indices",
+      stock: "Stocks",
+      other: "Other",
+    };
+
+    let html = "";
+    for (const kind of ["forex", "forex_otc", "crypto", "commodity", "index", "stock", "other"]) {
+      const items = openItems.filter(i => i.kind === kind);
+      if (!items.length) continue;
+      html += `<div class="text-[11px] uppercase tracking-wider text-gray-500 mt-3 mb-1 px-1">${groups[kind]}</div>`;
+      html += items.map(i => renderInstrumentButton(i)).join("");
+    }
+
+    if (closedItems.length) {
+      html += `
+        <details class="mt-3">
+          <summary class="text-[11px] text-gray-500 cursor-pointer py-2 px-1">Closed (${closedItems.length}) — tap to view</summary>
+          <div class="mt-1 space-y-1 opacity-50">${closedItems.map(i => renderInstrumentButton(i)).join("")}</div>
+        </details>
+      `;
+    }
+
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = `<div class="text-center py-6 text-xs text-red-400">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
 }
-function selectPair(p) {
-  cfg.pair = p;
-  localStorage.setItem("qt_pair", p);
-  $("currentPair").textContent = p;
+
+function renderInstrumentButton(i) {
+  let display = i.symbol;
+  if (i.symbol.endsWith("OTC")) {
+    display = i.symbol.slice(0, -3);
+  }
+  if (display.length === 6 && /^[A-Z]+$/.test(display)) {
+    display = display.slice(0,3) + "/" + display.slice(3);
+  }
+  if (i.is_otc) display += " OTC";
+
+  const activeSymbol = localStorage.getItem("qt_pair_symbol") || "";
+  const isActive = activeSymbol === i.symbol;
+
+  const payoutText = i.payout != null ? `${i.payout}%` : "—";
+  const payoutColor = i.payout == null || i.payout < 50 ? "text-gray-500"
+                     : i.payout < 80 ? "text-yellow-400"
+                     : "text-green-400";
+
+  return `
+    <button onclick="selectPair('${i.symbol}')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl ${isActive ? 'bg-[#1e3a5f] border border-blue-500/40' : 'bg-[#0e141d] border border-[#1f2a3a]'}">
+      <div class="flex items-center gap-2">
+        <span class="text-sm font-medium">${display}</span>
+        ${i.is_otc ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">OTC</span>' : ''}
+      </div>
+      <span class="text-xs font-semibold ${payoutColor}">${payoutText}</span>
+    </button>
+  `;
+}
+
+function selectPair(symbol) {
+  let clean = symbol.toUpperCase();
+  const isOtc = clean.endsWith("OTC");
+  if (isOtc) clean = clean.slice(0, -3);
+  let pretty = clean;
+  if (clean.length === 6 && /^[A-Z]+$/.test(clean)) {
+    pretty = clean.slice(0,3) + "/" + clean.slice(3);
+  }
+  cfg.pair = pretty;
+  localStorage.setItem("qt_pair", pretty);
+  localStorage.setItem("qt_pair_symbol", symbol);
+  $("currentPair").textContent = pretty + (isOtc ? " OTC" : "");
   window._chartFitted = false;
   closeModal("watchlist");
+
+  const inst = _instrumentsCache.find(x => x.symbol === symbol);
+  if (inst && Array.isArray(inst.durations) && inst.durations.length) {
+    const el = $("tradeTime");
+    const current = +el.value;
+    if (!inst.durations.includes(current)) {
+      el.value = inst.durations[0];
+      toast(`Duration set to ${inst.durations[0]}m for ${pretty}`, "ok");
+    }
+  }
+
   loadCandles();
   loadPayout();
 }
@@ -890,7 +1113,7 @@ function selectTf(t) {
 }
 window.selectTf = selectTf;
 
-// ── Account ─────────────────────────────────────────────────────────────
+// ── Account ─────────────────────────────────────────────────────────
 function setMode(m) {
   cfg.mode = m;
   localStorage.setItem("qt_mode", m);
@@ -1026,8 +1249,8 @@ function renderProfile() {
 async function loadPayout() {
   try {
     const r = await api("/api/iq/payouts");
-    const key = cfg.pair.replace("/", "").toUpperCase();
-    const pct = (r.payouts || {})[key];
+    const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","").toUpperCase();
+    const pct = (r.payouts || {})[rawSymbol];
     if (pct != null) {
       $("buyPayout").textContent = pct + "%";
       $("sellPayout").textContent = pct + "%";
@@ -1035,7 +1258,7 @@ async function loadPayout() {
   } catch (e) { console.warn("payouts:", e.message); }
 }
 
-// ── Trade panel ─────────────────────────────────────────────────────────
+// ── Trade panel ─────────────────────────────────────────────────────
 function adjustTime(d) { const el = $("tradeTime"); el.value = Math.max(1, Math.min(60, (+el.value || 1) + d)); }
 function adjustAmount(d) { const el = $("tradeAmount"); el.value = Math.max(1, (+el.value || 1) + d); }
 function setTimePreset(m) { $("tradeTime").value = m; }
@@ -1050,7 +1273,6 @@ async function placeTrade(dir) {
   const minutes = +$("tradeTime").value;
   if (!(amount > 0)) return toast("Amount must be > 0", "err");
 
-  // Ensure session
   if (!state.sessionId) {
     try {
       const r = await api("/api/iq/current");
@@ -1072,26 +1294,10 @@ async function placeTrade(dir) {
     }
   }
 
-  // Pre-flight availability check
-  try {
-    const avail = await api(`/api/iq/available?pair=${encodeURIComponent(cfg.pair)}&minutes=${minutes}`);
-    console.log("availability:", avail);
-    if (!avail.tradeable) {
-      const why = avail.reason || `${cfg.pair} is not tradeable right now`;
-      toast(why, "err");
-      return;
-    }
-    if (avail.payout != null && avail.payout < 30) {
-      toast(`${cfg.pair} payout too low (${avail.payout}%) — try another pair`, "err");
-      return;
-    }
-  } catch (e) {
-    console.warn("availability check failed, proceeding:", e.message);
-  }
-
+  const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","");
   const payload = {
     session_id: state.sessionId,
-    pair: cfg.pair,
+    pair: rawSymbol,
     direction: dir,
     amount,
     minutes,
@@ -1099,28 +1305,31 @@ async function placeTrade(dir) {
     place_on_iq: true,
   };
 
+  console.log("TRADE →", payload);
+
   const btn = dir === "BUY" ? $("buyBtn") : $("sellBtn");
   const prev = btn.innerHTML;
   btn.innerHTML = '<span class="text-sm font-bold">Placing…</span>';
   try {
     const r = await api("/api/trade", { method: "POST", body: JSON.stringify(payload) });
-    toast(`${dir} ${cfg.pair} · $${amount} · ${minutes}m`, "ok");
+    console.log("TRADE ←", r);
+    toast(`${dir} ${rawSymbol} · $${amount} · ${minutes}m`, "ok");
     if (r.balance != null) { state.balance = r.balance; renderBalance(); }
     loadTrades();
   } catch (e) {
+    console.error("TRADE FAILED:", e);
     let msg = e.message;
     if (/not available/i.test(msg)) {
-      msg = `${cfg.pair} closed on IQ right now. Try another pair or duration.`;
+      msg = `${rawSymbol} not tradeable — try an OTC pair or different duration`;
     }
     toast(msg, "err");
-    console.error("trade error:", e);
   } finally {
     btn.innerHTML = prev;
   }
 }
 window.placeTrade = placeTrade;
 
-// ── Trades ──────────────────────────────────────────────────────────────
+// ── Trades ──────────────────────────────────────────────────────────
 function switchTradeTab(which) {
   $("tab-opened").className = which === "opened" ? "tab-active flex-1 py-2.5 rounded-xl text-sm font-medium border" : "tab-inactive flex-1 py-2.5 rounded-xl text-sm font-medium border";
   $("tab-closed").className = which === "closed" ? "tab-active flex-1 py-2.5 rounded-xl text-sm font-medium border" : "tab-inactive flex-1 py-2.5 rounded-xl text-sm font-medium border";
@@ -1210,7 +1419,7 @@ function renderTradeRow(t) {
   `;
 }
 
-// ── Signals ─────────────────────────────────────────────────────────────
+// ── Signals ─────────────────────────────────────────────────────────
 async function loadSignals() {
   try {
     const r = await api("/api/signals?status=pending&limit=50");
@@ -1328,7 +1537,7 @@ function saveSettings() {
 }
 window.saveSettings = saveSettings;
 
-// ── Boot ────────────────────────────────────────────────────────────────
+// ── Boot ────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", async () => {
   $("currentPair").textContent = cfg.pair;
   $("tfBadge").textContent = cfg.tf;
