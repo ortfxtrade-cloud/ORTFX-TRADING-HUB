@@ -31,6 +31,7 @@ class IQSession:
     last_error: Optional[str] = None
 
     def is_alive(self) -> bool:
+        """Note: check_connect() is unreliable on cloud hosts. Use only for diagnostics."""
         if self.api is None:
             return False
         try:
@@ -41,7 +42,7 @@ class IQSession:
 
 
 def _import_iq_option():
-    from iqoptionapi.stable_api import IQ_Option  # noqa: WPS433
+    from iqoptionapi.stable_api import IQ_Option
     return IQ_Option
 
 
@@ -163,16 +164,15 @@ def get_session(session_id: str) -> Optional[IQSession]:
 
 def get_first_session() -> Optional[IQSession]:
     with _lock:
-        sessions = list(_sessions.values())
-    for s in sessions:
-        if s.is_alive():
-            return s
-    return sessions[0] if sessions else None
+        if not _sessions:
+            return None
+        return max(_sessions.values(), key=lambda s: s.connected_at)
 
 
 def refresh_balance(session_id: str) -> Optional[float]:
+    # NOTE: do NOT gate on is_alive() — check_connect() is unreliable on Render.
     sess = get_session(session_id)
-    if not sess or not sess.is_alive():
+    if not sess:
         return None
     try:
         bal = float(sess.api.get_balance() or 0)
@@ -190,9 +190,10 @@ def place_binary_order(
     amount: float,
     duration_min: int = 1,
 ) -> Tuple[bool, Dict[str, Any]]:
+    # NOTE: do NOT gate on is_alive() — check_connect() is unreliable on Render.
     sess = get_session(session_id)
-    if not sess or not sess.is_alive():
-        return False, {"message": "Session not connected"}
+    if not sess:
+        return False, {"message": "Session not found — reconnect"}
 
     active = re.sub(r"[^A-Z0-9]", "", (active or "").upper())
     if not active:
@@ -224,20 +225,37 @@ def place_binary_order(
             f"(allowed: {sorted(DURATION_WHITELIST)})"
         }
 
+    import concurrent.futures
+
+    def _do_buy():
+        return sess.api.buy(amount, active, d, duration_min)
+
     try:
-        ok, order_id = sess.api.buy(amount, active, d, duration_min)
-        if not ok:
-            return False, {"message": f"Order rejected: {order_id}"}
-        return True, {
-            "order_id": str(order_id),
-            "active": active,
-            "direction": d,
-            "amount": amount,
-            "duration": duration_min,
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_do_buy)
+            ok, order_id = fut.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        logger.error("place order TIMEOUT after 20s: %s %s %.2f %dm",
+                     active, d, amount, duration_min)
+        return False, {
+            "message": (
+                "IQ did not respond within 20 seconds. "
+                "The order may or may not have been placed — check IQ history."
+            )
         }
     except Exception as e:
         logger.exception("place order failed")
         return False, {"message": str(e)}
+
+    if not ok:
+        return False, {"message": f"Order rejected: {order_id}"}
+    return True, {
+        "order_id": str(order_id),
+        "active": active,
+        "direction": d,
+        "amount": amount,
+        "duration": duration_min,
+    }
 
 
 def list_active_sessions() -> List[Dict[str, Any]]:
@@ -260,7 +278,6 @@ def list_active_sessions() -> List[Dict[str, Any]]:
 
 
 def _extract_profit(msg: Dict[str, Any], won: bool) -> Optional[float]:
-    """Try to pull a numeric profit from an IQ result payload."""
     for key in ("profit_amount", "profit", "pnl", "win_amount", "close_profit"):
         if key in msg and msg[key] is not None:
             try:
@@ -271,23 +288,13 @@ def _extract_profit(msg: Dict[str, Any], won: bool) -> Optional[float]:
 
 
 def get_order_result(session_id: str, order_id: str) -> Optional[Dict[str, Any]]:
-    """
-    Ask IQ for the result of a binary order.
-
-    Returns:
-        {"status": "closed", "won": True/False, "profit": float|None}
-        {"status": "open"}   — not resolved yet
-        None                 — couldn't query (dead session, order unknown, ...)
-
-    Tries get_optioninfo() first (most forks), then get_async_order() (williansandi).
-    """
+    # NOTE: no is_alive() gate.
     sess = get_session(session_id)
-    if not sess or not sess.is_alive():
+    if not sess:
         return None
 
     api = sess.api
 
-    # ── Path A: get_optioninfo(order_id) ─────────────────────────────────
     try:
         if hasattr(api, "get_optioninfo"):
             info = api.get_optioninfo(10, order_id)
@@ -305,7 +312,6 @@ def get_order_result(session_id: str, order_id: str) -> Optional[Dict[str, Any]]
     except Exception as e:
         logger.debug("get_optioninfo failed for %s: %s", order_id, e)
 
-    # ── Path B: get_async_order(order_id) ────────────────────────────────
     try:
         if hasattr(api, "get_async_order"):
             info = api.get_async_order(order_id)
