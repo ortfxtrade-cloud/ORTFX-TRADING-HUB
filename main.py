@@ -356,32 +356,131 @@ def api_iq_current(_: None = Depends(require_api_key)):
     }
 
 
+@app.get("/api/iq/instruments")
+def api_iq_instruments(_: None = Depends(require_api_key)):
+    """
+    Every asset IQ currently offers, with payout, open state, durations.
+    """
+    sess = iq.get_first_session()
+    if not sess or not sess.is_alive():
+        raise HTTPException(410, "No live IQ session")
+
+    try:
+        actives = sess.api.get_all_ACTIVES_OPCODE() or {}
+    except Exception as e:
+        logger.warning("get_all_ACTIVES_OPCODE failed: %s", e)
+        actives = {}
+
+    try:
+        profits = sess.api.get_all_profit() or {}
+    except Exception as e:
+        logger.warning("get_all_profit failed: %s", e)
+        profits = {}
+
+    open_time = {}
+    try:
+        if hasattr(sess.api, "get_all_open_time"):
+            open_time = sess.api.get_all_open_time() or {}
+    except Exception as e:
+        logger.debug("get_all_open_time failed: %s", e)
+
+    def classify(symbol: str) -> str:
+        s = symbol.upper()
+        if s.endswith("OTC"):
+            return "forex_otc"
+        if s in ("BTCUSD","ETHUSD","LTCUSD","XRPUSD","BCHUSD","BTCUSDT","ETHUSDT"):
+            return "crypto"
+        if s.startswith("XAU") or s.startswith("XAG") or s.startswith("XPT") or s.startswith("XPD"):
+            return "commodity"
+        if s in ("US30","NAS100","SPX500","GER40","UK100","JP225","US500","F40","E35"):
+            return "index"
+        if s in ("AAPL","TSLA","AMZN","FB","MSFT","NFLX","GOOGL","INTC","JPM","VISA"):
+            return "stock"
+        if len(s) == 6 and s.isalpha():
+            return "forex"
+        return "other"
+
+    account_type = sess.account_type
+
+    def payout_of(symbol: str):
+        data = profits.get(symbol)
+        if isinstance(data, dict):
+            pct = data.get(account_type) or data.get("turbo") or data.get("binary")
+            if pct is not None:
+                try:
+                    return round(float(pct) * 100, 1)
+                except Exception:
+                    return None
+        elif isinstance(data, (int, float)) and data:
+            return round(float(data) * 100, 1)
+        return None
+
+    def durations_of(symbol: str):
+        for kind in ("turbo", "binary"):
+            node = (open_time.get(kind) or {}).get(symbol)
+            if isinstance(node, dict):
+                d = node.get("durations")
+                if isinstance(d, list) and d:
+                    return sorted({int(x) for x in d if str(x).isdigit()})
+        return [1, 2, 3, 5, 10, 15, 30, 60]
+
+    def is_open(symbol: str):
+        for kind in ("turbo", "binary"):
+            node = (open_time.get(kind) or {}).get(symbol)
+            if isinstance(node, dict):
+                return bool(node.get("open"))
+        return (payout_of(symbol) or 0) > 0
+
+    out = []
+    seen = set()
+    for symbol in actives.keys():
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        out.append({
+            "symbol": symbol,
+            "kind": classify(symbol),
+            "is_otc": symbol.upper().endswith("OTC"),
+            "payout": payout_of(symbol),
+            "open": is_open(symbol),
+            "durations": durations_of(symbol),
+        })
+
+    kind_order = {"forex": 1, "forex_otc": 2, "crypto": 3, "commodity": 4, "index": 5, "stock": 6, "other": 7}
+    out.sort(key=lambda x: (not x["open"], kind_order.get(x["kind"], 99), x["symbol"]))
+
+    open_count = sum(1 for x in out if x["open"])
+    logger.info("instruments: %d total, %d open", len(out), open_count)
+
+    return {
+        "status": "success",
+        "count": len(out),
+        "open_count": open_count,
+        "instruments": out,
+    }
+
+
 @app.get("/api/iq/available")
 def api_iq_available(
     pair: str,
     minutes: int = 1,
     _: None = Depends(require_api_key),
 ):
-    """
-    Pre-flight check: is this pair tradeable right now, at what payout,
-    and does it support the requested duration?
-    """
+    """Pre-flight check: is this pair tradeable right now?"""
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
 
     active = pair.upper().replace("/", "").replace(" ", "")
-    account_type = sess.account_type  # PRACTICE or REAL
+    account_type = sess.account_type
 
-    # 1. Asset list — is it a known tradeable symbol?
     in_list = False
     try:
         actives = sess.api.get_all_ACTIVES_OPCODE() or {}
         in_list = active in actives
-    except Exception as e:
-        logger.debug("get_all_ACTIVES_OPCODE failed: %s", e)
+    except Exception:
+        pass
 
-    # 2. Payout — if IQ gives a number > 0, the pair is open
     payout = None
     try:
         profits = sess.api.get_all_profit() or {}
@@ -392,10 +491,9 @@ def api_iq_available(
                 payout = round(float(pct) * 100, 1)
         elif isinstance(data, (int, float)) and data:
             payout = round(float(data) * 100, 1)
-    except Exception as e:
-        logger.debug("get_all_profit failed: %s", e)
+    except Exception:
+        pass
 
-    # 3. Durations — what IQ allows for this pair
     durations = []
     try:
         if hasattr(sess.api, "get_all_open_time"):
@@ -410,15 +508,13 @@ def api_iq_available(
                         durations = [d]
                     if durations:
                         break
-    except Exception as e:
-        logger.debug("get_all_open_time failed: %s", e)
+    except Exception:
+        pass
 
     if not durations:
         durations = [1, 2, 3, 5, 10, 15, 30, 60]
 
     tradeable = bool(in_list or payout)
-
-    # Check the specific duration
     duration_ok = (minutes in durations) if durations else True
 
     reason = None
@@ -499,7 +595,6 @@ def api_iq_candles_history(
 
     all_candles = []
     seen_times = set()
-
     end_time = time.time()
     pages = min((total + PAGE - 1) // PAGE, 20)
 
@@ -556,12 +651,14 @@ def api_iq_indicators(
     tf: str = "M1",
     total: int = 500,
     rsi_period: int = 14,
+    rsi_upper: float = 70,
+    rsi_middle: float = 50,
+    rsi_lower: float = 30,
     macd_fast: int = 12,
     macd_slow: int = 26,
     macd_signal: int = 9,
     _: None = Depends(require_api_key),
 ):
-    """Compute RSI + MACD on live IQ candles."""
     sess = iq.get_first_session()
     if not sess or not sess.is_alive():
         raise HTTPException(410, "No live IQ session")
@@ -569,6 +666,11 @@ def api_iq_indicators(
     active = pair.upper().replace("/", "").replace(" ", "")
     tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
     total = max(50, min(int(total or 500), 1000))
+
+    rsi_period = max(2, min(int(rsi_period), 100))
+    macd_fast = max(2, min(int(macd_fast), 200))
+    macd_slow = max(macd_fast + 1, min(int(macd_slow), 400))
+    macd_signal = max(2, min(int(macd_signal), 100))
 
     raw = None
     for attempt in range(2):
@@ -581,10 +683,24 @@ def api_iq_indicators(
             break
         time.sleep(0.4)
 
-    logger.info("indicators: %s %s returned %d candles", pair, tf, len(raw or []))
+    logger.info(
+        "indicators: %s %s rsi=%d/%s/%s/%s macd=%d/%d/%d candles=%d",
+        pair, tf, rsi_period, rsi_lower, rsi_middle, rsi_upper,
+        macd_fast, macd_slow, macd_signal, len(raw or []),
+    )
+
+    params = {
+        "rsi_period": rsi_period,
+        "rsi_lower": rsi_lower, "rsi_middle": rsi_middle, "rsi_upper": rsi_upper,
+        "macd_fast": macd_fast, "macd_slow": macd_slow, "macd_signal": macd_signal,
+    }
 
     if not raw:
-        return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": []}
+        return {
+            "status": "success", "candles": 0,
+            "rsi": [], "macd": [], "signal": [], "hist": [],
+            "params": params,
+        }
 
     rows = []
     for c in raw:
@@ -600,10 +716,9 @@ def api_iq_indicators(
         })
 
     if not rows:
-        return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": []}
+        return {"status": "success", "candles": 0, "rsi": [], "macd": [], "signal": [], "hist": [], "params": params}
 
     rows.sort(key=lambda r: r["time"])
-
     df = pd.DataFrame(rows)
     closes = df["close"].astype(float)
 
@@ -639,10 +754,8 @@ def api_iq_indicators(
     return {
         "status": "success",
         "candles": len(rows),
-        "rsi": rsi_out,
-        "macd": macd_out,
-        "signal": signal_out,
-        "hist": hist_out,
+        "rsi": rsi_out, "macd": macd_out, "signal": signal_out, "hist": hist_out,
+        "params": params,
     }
 
 
@@ -853,7 +966,6 @@ def api_confirm_signal(
     if not session_id:
         raise HTTPException(400, "No IQ session connected")
 
-    # Pre-flight duration check
     DURATION_OK = {1, 2, 3, 5, 10, 15, 30, 60}
     if minutes not in DURATION_OK:
         minutes = 5
@@ -1023,18 +1135,15 @@ def api_place_trade(
 
     active = body.pair.upper().replace("/", "").replace(" ", "")
 
-    # Duration sanity
     DURATION_OK = {1, 2, 3, 5, 10, 15, 30, 60}
     if body.minutes not in DURATION_OK:
-        raise HTTPException(400, f"Duration {body.minutes}m not supported (use 1, 2, 3, 5, 10, 15, 30, 60)")
+        raise HTTPException(400, f"Duration {body.minutes}m not supported")
 
     logger.info(
-        "TRADE REQUEST: pair=%s → active=%s dir=%s amt=%.2f dur=%dm session=%s",
+        "TRADE REQUEST: pair=%s → active=%s dir=%s amt=%.2f dur=%dm",
         body.pair, active, body.direction, body.amount, body.minutes,
-        session_id[:14] if session_id else "none",
     )
 
-    # Live payout refresh
     payout = body.payout_pct
     try:
         sess = iq.get_session(session_id)
@@ -1050,7 +1159,6 @@ def api_place_trade(
     except Exception as e:
         logger.warning("payout fetch failed: %s", e)
 
-    # Place the order
     ok, result = iq.place_binary_order(
         session_id,
         active=active,
@@ -1063,7 +1171,6 @@ def api_place_trade(
 
     if not ok:
         detail = result.get("message", "Order rejected")
-        # Friendlier messages
         low = detail.lower()
         if "not available" in low:
             detail = (
