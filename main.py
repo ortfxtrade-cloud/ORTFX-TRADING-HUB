@@ -322,11 +322,15 @@ def api_iq_balance(session_id: str, _: None = Depends(require_api_key)):
     sess = iq.get_session(session_id)
     if not sess:
         raise HTTPException(404, "Session not found")
-    if not sess.is_alive():
-        raise HTTPException(410, "Session disconnected")
     bal = iq.refresh_balance(session_id)
     if bal is None:
-        raise HTTPException(502, "Could not fetch balance from IQ")
+        # Fall back to cached balance instead of erroring
+        return {
+            "status": "success",
+            "balance": sess.balance,
+            "currency": sess.currency,
+            "mode": sess.mode,
+        }
     return {
         "status": "success",
         "balance": bal,
@@ -358,9 +362,10 @@ def api_iq_current(_: None = Depends(require_api_key)):
 
 @app.get("/api/iq/instruments")
 def api_iq_instruments(_: None = Depends(require_api_key)):
+    # No is_alive() gate — check_connect() is unreliable on Render.
     sess = iq.get_first_session()
-    if not sess or not sess.is_alive():
-        raise HTTPException(410, "No live IQ session")
+    if not sess:
+        raise HTTPException(410, "No IQ session — connect your account")
 
     try:
         actives = sess.api.get_all_ACTIVES_OPCODE() or {}
@@ -464,9 +469,10 @@ def api_iq_candles(
     limit: int = 1000,
     _: None = Depends(require_api_key),
 ):
+    # No is_alive() gate
     sess = iq.get_first_session()
-    if not sess or not sess.is_alive():
-        raise HTTPException(410, "No live IQ session")
+    if not sess:
+        raise HTTPException(410, "No IQ session — connect your account")
 
     active = pair.upper().replace("/", "").replace(" ", "")
     tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
@@ -500,9 +506,10 @@ def api_iq_candles_history(
     total: int = 3000,
     _: None = Depends(require_api_key),
 ):
+    # No is_alive() gate
     sess = iq.get_first_session()
-    if not sess or not sess.is_alive():
-        raise HTTPException(410, "No live IQ session")
+    if not sess:
+        raise HTTPException(410, "No IQ session — connect your account")
 
     active = pair.upper().replace("/", "").replace(" ", "")
     tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
@@ -576,9 +583,10 @@ def api_iq_indicators(
     macd_signal: int = 9,
     _: None = Depends(require_api_key),
 ):
+    # No is_alive() gate
     sess = iq.get_first_session()
-    if not sess or not sess.is_alive():
-        raise HTTPException(410, "No live IQ session")
+    if not sess:
+        raise HTTPException(410, "No IQ session — connect your account")
 
     active = pair.upper().replace("/", "").replace(" ", "")
     tf_seconds = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800, "H1": 3600}.get(tf.upper(), 60)
@@ -674,9 +682,10 @@ def api_iq_indicators(
 
 @app.get("/api/iq/payouts")
 def api_iq_payouts(_: None = Depends(require_api_key)):
+    # No is_alive() gate
     sess = iq.get_first_session()
-    if not sess or not sess.is_alive():
-        raise HTTPException(410, "No live IQ session")
+    if not sess:
+        raise HTTPException(410, "No IQ session — connect your account")
     try:
         profits = sess.api.get_all_profit() or {}
     except Exception as e:
@@ -1060,7 +1069,7 @@ def api_place_trade(
     payout = body.payout_pct
     try:
         sess = iq.get_session(session_id)
-        if sess and sess.is_alive():
+        if sess:
             profits = sess.api.get_all_profit() or {}
             data = profits.get(active)
             if isinstance(data, dict):
