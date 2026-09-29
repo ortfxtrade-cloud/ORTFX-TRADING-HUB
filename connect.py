@@ -31,7 +31,6 @@ class IQSession:
     last_error: Optional[str] = None
 
     def is_alive(self) -> bool:
-        """Note: check_connect() is unreliable on cloud hosts. Use only for diagnostics."""
         if self.api is None:
             return False
         try:
@@ -288,13 +287,29 @@ def _extract_profit(msg: Dict[str, Any], won: bool) -> Optional[float]:
 
 
 def get_order_result(session_id: str, order_id: str) -> Optional[Dict[str, Any]]:
-    # NOTE: no is_alive() gate.
     sess = get_session(session_id)
     if not sess:
         return None
 
     api = sess.api
 
+    # Try get_async_order FIRST (more reliable in the williansandi fork)
+    try:
+        if hasattr(api, "get_async_order"):
+            info = api.get_async_order(order_id)
+            if isinstance(info, dict):
+                msg = info.get("msg", info)
+                status = str(msg.get("status") or info.get("status") or "").lower()
+                if status in ("closed", "win", "loss"):
+                    won = status == "win" or bool(msg.get("win"))
+                    profit = _extract_profit(msg, won)
+                    return {"status": "closed", "won": won, "profit": profit}
+                if status in ("open", "pending"):
+                    return {"status": "open"}
+    except Exception as e:
+        logger.debug("get_async_order failed for %s: %s", order_id, e)
+
+    # Fallback: get_optioninfo
     try:
         if hasattr(api, "get_optioninfo"):
             info = api.get_optioninfo(10, order_id)
@@ -311,20 +326,5 @@ def get_order_result(session_id: str, order_id: str) -> Optional[Dict[str, Any]]
                     return {"status": "open"}
     except Exception as e:
         logger.debug("get_optioninfo failed for %s: %s", order_id, e)
-
-    try:
-        if hasattr(api, "get_async_order"):
-            info = api.get_async_order(order_id)
-            if isinstance(info, dict):
-                msg = info.get("msg", info)
-                status = str(msg.get("status") or info.get("status") or "").lower()
-                if status in ("closed", "win", "loss"):
-                    won = status == "win" or bool(msg.get("win"))
-                    profit = _extract_profit(msg, won)
-                    return {"status": "closed", "won": won, "profit": profit}
-                if status in ("open", "pending"):
-                    return {"status": "open"}
-    except Exception as e:
-        logger.debug("get_async_order failed for %s: %s", order_id, e)
 
     return None
