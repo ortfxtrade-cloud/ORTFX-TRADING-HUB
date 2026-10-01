@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import pandas as pd
+import requests
 import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -65,19 +66,17 @@ IQ_AUTO_CONNECT = os.getenv("IQ_AUTO_CONNECT", "true").lower() in ("1", "true", 
 RESULT_POLL_INTERVAL = int(os.getenv("RESULT_POLL_INTERVAL", "10"))
 RESULT_VOID_AFTER = int(os.getenv("RESULT_VOID_AFTER", "600"))
 
-if not API_KEY and ENV == "production":
-    raise RuntimeError("BACKEND_API_KEY must be set in production")
+# ── Twelve Data chart provider ──────────────────────────────────────────────
+TWELVE_DATA_KEY = os.getenv("TWELVE_DATA_KEY", "").strip()
+TWELVE_DATA_BASE = "https://api.twelvedata.com"
 
-
-# ── Biquote chart provider ──────────────────────────────────────────────────
-
-_BIQUOTE_TF = {
-    "M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m",
-    "H1": "1h", "H4": "4h", "D1": "1d",
+_TWELVE_TF = {
+    "M1": "1min", "M5": "5min", "M15": "15min", "M30": "30min",
+    "H1": "1h", "H4": "4h", "D1": "1day",
 }
 
 
-def _biquote_symbol(pair: str) -> str:
+def _twelve_symbol(pair: str) -> str:
     """EURUSD → EUR/USD, EUR/USD → EUR/USD"""
     p = pair.upper().replace("OTC", "").replace(" ", "")
     if "/" not in p and len(p) == 6 and p.isalpha():
@@ -85,32 +84,48 @@ def _biquote_symbol(pair: str) -> str:
     return p
 
 
-def _fetch_biquote_candles(pair: str, tf: str, limit: int):
-    """Fetch candles from Biquote. No IQ websocket involved."""
-    from biquote import get_candles
+def _fetch_twelve_candles(pair: str, tf: str, limit: int):
+    """Fetch candles from Twelve Data REST API."""
+    if not TWELVE_DATA_KEY:
+        raise RuntimeError("TWELVE_DATA_KEY not set in environment")
 
-    symbol = _biquote_symbol(pair)
-    interval = _BIQUOTE_TF.get(tf.upper(), "1m")
+    symbol = _twelve_symbol(pair)
+    interval = _TWELVE_TF.get(tf.upper(), "1min")
     limit = max(10, min(int(limit or 500), 5000))
 
-    raw = get_candles(symbol=symbol, interval=interval, limit=limit)
+    url = f"{TWELVE_DATA_BASE}/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "outputsize": limit,
+        "apikey": TWELVE_DATA_KEY,
+        "format": "JSON",
+        "order": "ASC",
+    }
 
+    r = requests.get(url, params=params, timeout=20)
+    data = r.json()
+
+    if data.get("status") == "error":
+        msg = data.get("message", "Twelve Data error")
+        raise RuntimeError(msg)
+
+    values = data.get("values") or []
     candles = []
-    for c in raw or []:
+    for v in values:
         try:
-            t = c.get("time") or c.get("timestamp") or c.get("datetime")
-            if isinstance(t, str):
-                from datetime import datetime as _dt
-                try:
-                    t = int(_dt.fromisoformat(t.replace("Z", "+00:00")).timestamp())
-                except Exception:
-                    continue
+            dt_str = v.get("datetime", "")
+            if " " in dt_str:
+                dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+            else:
+                dt = datetime.strptime(dt_str, "%Y-%m-%d")
+            ts = int(dt.replace(tzinfo=timezone.utc).timestamp())
             candles.append({
-                "time": int(t),
-                "open": float(c.get("open") or 0),
-                "high": float(c.get("high") or 0),
-                "low": float(c.get("low") or 0),
-                "close": float(c.get("close") or 0),
+                "time": ts,
+                "open": float(v.get("open") or 0),
+                "high": float(v.get("high") or 0),
+                "low": float(v.get("low") or 0),
+                "close": float(v.get("close") or 0),
             })
         except Exception:
             continue
@@ -409,7 +424,7 @@ def api_iq_current(_: None = Depends(require_api_key)):
     }
 
 
-# ── Instruments cache (60s TTL) ─────────────────────────────────────────────
+# ── Instruments cache ───────────────────────────────────────────────────────
 
 _INSTRUMENTS_CACHE = {"data": None, "timestamp": 0, "session_id": None}
 _INSTRUMENTS_CACHE_TTL = 60
@@ -479,7 +494,6 @@ def _build_instruments(sess) -> dict:
         if symbol in seen:
             continue
         seen.add(symbol)
-        # Skip OTC pairs entirely
         if symbol.upper().endswith("OTC"):
             continue
         out.append({
@@ -531,7 +545,7 @@ def api_iq_instruments(refresh: bool = False, _: None = Depends(require_api_key)
         raise HTTPException(502, f"Could not load instruments: {e}")
 
 
-# ── Candles (Biquote) ───────────────────────────────────────────────────────
+# ── Candles (Twelve Data) ───────────────────────────────────────────────────
 
 
 @app.get("/api/iq/candles")
@@ -541,15 +555,14 @@ def api_candles(
     limit: int = 10,
     _: None = Depends(require_api_key),
 ):
-    """Recent candles from Biquote — no IQ websocket involved."""
     try:
-        candles = _fetch_biquote_candles(pair, tf, limit)
+        candles = _fetch_twelve_candles(pair, tf, limit)
     except Exception as e:
-        logger.error("biquote candles failed: %s", e)
+        logger.error("twelve data candles failed: %s", e)
         raise HTTPException(502, f"Chart provider error: {e}")
     return {
         "status": "success", "pair": pair, "tf": tf.upper(),
-        "candles": candles, "source": "biquote",
+        "candles": candles, "source": "twelve_data",
     }
 
 
@@ -560,15 +573,14 @@ def api_candles_history(
     total: int = 500,
     _: None = Depends(require_api_key),
 ):
-    """Historical candles from Biquote — no IQ websocket involved."""
     try:
-        candles = _fetch_biquote_candles(pair, tf, total)
+        candles = _fetch_twelve_candles(pair, tf, total)
     except Exception as e:
-        logger.error("biquote history failed: %s", e)
+        logger.error("twelve data history failed: %s", e)
         raise HTTPException(502, f"Chart provider error: {e}")
     return {
         "status": "success", "pair": pair, "tf": tf.upper(),
-        "count": len(candles), "candles": candles, "source": "biquote",
+        "count": len(candles), "candles": candles, "source": "twelve_data",
     }
 
 
@@ -593,7 +605,7 @@ def api_iq_indicators(
     macd_signal = max(2, min(int(macd_signal), 100))
 
     try:
-        rows = _fetch_biquote_candles(pair, tf, total)
+        rows = _fetch_twelve_candles(pair, tf, total)
     except Exception as e:
         raise HTTPException(502, f"Chart provider error: {e}")
 
