@@ -169,7 +169,6 @@ def get_first_session() -> Optional[IQSession]:
 
 
 def refresh_balance(session_id: str) -> Optional[float]:
-    # NOTE: do NOT gate on is_alive() — check_connect() is unreliable on Render.
     sess = get_session(session_id)
     if not sess:
         return None
@@ -182,6 +181,56 @@ def refresh_balance(session_id: str) -> Optional[float]:
         return None
 
 
+def _try_turbo(api, active: str, d: str, amount: float, duration_min: int):
+    """Place a turbo (binary) trade. Returns (ok, result)."""
+    logger.info("TURBO BUY: %s %s %.2f %dm", active, d, amount, duration_min)
+    try:
+        res = api.buy(amount, active, d, duration_min)
+        logger.info("TURBO BUY RAW: %r", res)
+        return res
+    except Exception as e:
+        logger.warning("turbo buy exception: %s", e)
+        return (False, str(e))
+
+
+def _try_digital(api, active: str, d: str, amount: float, duration_min: int):
+    """Place a digital trade. Tries several fork-specific method names."""
+    candidates = []
+    for name in ("buy_digital_spot", "buy_digital", "buy_digital_spot_v2"):
+        if hasattr(api, name):
+            candidates.append(name)
+
+    if not candidates:
+        return (False, "no digital method available in this fork")
+
+    last_err = None
+    for name in candidates:
+        fn = getattr(api, name)
+        logger.info("DIGITAL BUY via %s: %s %s %.2f %dm", name, active, d, amount, duration_min)
+        try:
+            # Different forks take different argument orders. Try the
+            # common one first, then fall back to variants.
+            try:
+                res = fn(active, amount, d, duration_min)
+            except TypeError:
+                try:
+                    res = fn(amount, active, d, duration_min)
+                except TypeError:
+                    res = fn(active, amount, d, duration_min, 1)
+            logger.info("DIGITAL BUY RAW (%s): %r", name, res)
+            if isinstance(res, tuple) and len(res) == 2:
+                return res
+            if isinstance(res, dict):
+                ok = bool(res.get("status") or res.get("id"))
+                return (ok, res)
+            return (False, f"unexpected return: {res!r}")
+        except Exception as e:
+            last_err = f"{name}: {e}"
+            logger.warning("digital buy %s exception: %s", name, e)
+
+    return (False, last_err or "all digital methods failed")
+
+
 def place_binary_order(
     session_id: str,
     active: str,
@@ -189,7 +238,6 @@ def place_binary_order(
     amount: float,
     duration_min: int = 1,
 ) -> Tuple[bool, Dict[str, Any]]:
-    # NOTE: do NOT gate on is_alive() — check_connect() is unreliable on Render.
     sess = get_session(session_id)
     if not sess:
         return False, {"message": "Session not found — reconnect"}
@@ -226,34 +274,61 @@ def place_binary_order(
 
     import concurrent.futures
 
-    def _do_buy():
-        return sess.api.buy(amount, active, d, duration_min)
+    # ── Availability snapshot ────────────────────────────────────────────
+    try:
+        ot = sess.api.get_all_open_time() or {}
+        t_open = (ot.get("turbo", {}) or {}).get(active, {}).get("open")
+        b_open = (ot.get("binary", {}) or {}).get(active, {}).get("open")
+        logger.info("AVAILABILITY: %s turbo=%s binary=%s", active, t_open, b_open)
+    except Exception as e:
+        logger.debug("availability check failed: %s", e)
 
+    # ── Attempt 1: TURBO ─────────────────────────────────────────────────
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(_do_buy)
-            ok, order_id = fut.result(timeout=20)
+            fut = ex.submit(_try_turbo, sess.api, active, d, amount, duration_min)
+            ok, order_id = fut.result(timeout=15)
     except concurrent.futures.TimeoutError:
-        logger.error("place order TIMEOUT after 20s: %s %s %.2f %dm",
-                     active, d, amount, duration_min)
-        return False, {
-            "message": (
-                "IQ did not respond within 20 seconds. "
-                "The order may or may not have been placed — check IQ history."
-            )
-        }
-    except Exception as e:
-        logger.exception("place order failed")
-        return False, {"message": str(e)}
+        logger.error("turbo buy TIMEOUT")
+        ok, order_id = False, "turbo timeout"
 
-    if not ok:
-        return False, {"message": f"Order rejected: {order_id}"}
-    return True, {
-        "order_id": str(order_id),
-        "active": active,
-        "direction": d,
-        "amount": amount,
-        "duration": duration_min,
+    if ok:
+        return True, {
+            "order_id": str(order_id),
+            "active": active,
+            "direction": d,
+            "amount": amount,
+            "duration": duration_min,
+            "type": "turbo",
+        }
+
+    turbo_reason = str(order_id or "")
+
+    # ── Attempt 2: DIGITAL ───────────────────────────────────────────────
+    logger.info("turbo failed (%s) — falling back to digital", turbo_reason)
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_try_digital, sess.api, active, d, amount, duration_min)
+            ok2, order_id2 = fut.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        logger.error("digital buy TIMEOUT")
+        ok2, order_id2 = False, "digital timeout"
+
+    if ok2:
+        return True, {
+            "order_id": str(order_id2),
+            "active": active,
+            "direction": d,
+            "amount": amount,
+            "duration": duration_min,
+            "type": "digital",
+        }
+
+    return False, {
+        "message": (
+            f"Both turbo and digital rejected. "
+            f"turbo='{turbo_reason}' digital='{order_id2}'"
+        )
     }
 
 
@@ -293,7 +368,7 @@ def get_order_result(session_id: str, order_id: str) -> Optional[Dict[str, Any]]
 
     api = sess.api
 
-    # Try get_async_order FIRST (more reliable in the williansandi fork)
+    # Try get_async_order FIRST
     try:
         if hasattr(api, "get_async_order"):
             info = api.get_async_order(order_id)
