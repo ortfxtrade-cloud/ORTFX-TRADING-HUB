@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-<title>ORTFX Trading HUB</title>
+<title>QT Trading</title>
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -405,7 +405,10 @@
 
 <div id="modal-watchlist" class="modal-backdrop" onclick="if(event.target===this)closeModal('watchlist')">
   <div class="modal-panel">
-    <h2 class="text-lg font-semibold mb-3">Select Instrument</h2>
+    <h2 class="text-lg font-semibold mb-3 flex items-center justify-between">
+      <span>Select Instrument</span>
+      <button onclick="forceRefreshInstruments()" class="text-xs px-2.5 py-1 rounded-lg border border-[#2a3544] bg-[#151e2b] text-gray-300">Refresh</button>
+    </h2>
     <div id="pairList" class="space-y-1 max-h-[60vh] overflow-y-auto no-scrollbar"></div>
     <button onclick="closeModal('watchlist')" class="w-full mt-3 py-3 rounded-xl bg-[#1a2433] border border-[#2a3544] text-sm">Close</button>
   </div>
@@ -538,6 +541,7 @@ const state = {
   signalsTimer: null,
   _pollCount: 0,
   _rsiLines: null,
+  _lastCandles: [],
   ind: {
     rsiPeriod: +localStorage.getItem("qt_rsi_period") || 14,
     rsiUpper:  +localStorage.getItem("qt_rsi_upper")  || 70,
@@ -865,7 +869,7 @@ async function loadCandles() {
   setChartStatus("loading…");
   const rawSymbol = localStorage.getItem("qt_pair_symbol") || cfg.pair.replace("/","");
   try {
-    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(rawSymbol)}&tf=${cfg.tf}&total=2000`);
+    const r = await api(`/api/iq/candles/history?pair=${encodeURIComponent(rawSymbol)}&tf=${cfg.tf}&total=500`);
     const candles = (r.candles || []).map(c => ({
       time: c.time, open: +c.open, high: +c.high, low: +c.low, close: +c.close,
     }));
@@ -875,6 +879,7 @@ async function loadCandles() {
       return;
     }
     candleSeries.setData(candles);
+    state._lastCandles = candles;
 
     if (!window._chartFitted) {
       const visible = candles.slice(-200);
@@ -885,7 +890,7 @@ async function loadCandles() {
     }
 
     updateSentiment(candles);
-    setChartStatus(`${cfg.pair} · ${cfg.tf} · ${candles.length} bars`);
+    setChartStatus(`${cfg.pair} · ${cfg.tf} · ${candles.length} bars · ${r.source || ""}`);
 
     if (state.ema20Series) state.ema20Series.setData(ema(candles, 20));
     if (state.ema50Series) state.ema50Series.setData(ema(candles, 50));
@@ -936,9 +941,6 @@ async function loadIndicators() {
       const lbl = $("macdLabel");
       if (lbl) lbl.textContent = `MACD ${p.macdFast} / ${p.macdSlow} / ${p.macdSignal}`;
     }
-
-    if (rsiChart) rsiChart.timeScale().fitContent();
-    if (macdChart) macdChart.timeScale().fitContent();
   } catch (e) {
     console.warn("indicators:", e.message);
   }
@@ -955,6 +957,17 @@ async function pollCandles() {
         time: last.time,
         open: +last.open, high: +last.high, low: +last.low, close: +last.close,
       });
+      const newBar = {
+        time: last.time, open: +last.open, high: +last.high,
+        low: +last.low, close: +last.close,
+      };
+      const arr = state._lastCandles;
+      if (arr.length && arr[arr.length - 1].time === newBar.time) {
+        arr[arr.length - 1] = newBar;
+      } else {
+        arr.push(newBar);
+        if (arr.length > 600) arr.shift();
+      }
       updateSentimentTick(+last.close, +last.open);
       state._pollCount = (state._pollCount || 0) + 1;
       if ((state.rsiOn || state.macdOn) && state._pollCount % 2 === 0) {
@@ -987,12 +1000,18 @@ function renderSentiment(bullPct) {
 // ── Instruments / Watchlist ─────────────────────────────────────────
 let _instrumentsCache = [];
 
-async function renderPairList() {
+async function renderPairList(refresh = false) {
   const el = $("pairList");
-  el.innerHTML = '<div class="text-center py-6 text-xs text-gray-500">Loading instruments…</div>';
+  el.innerHTML = `
+    <div class="text-center py-8">
+      <div class="inline-block w-6 h-6 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin"></div>
+      <div class="text-xs text-gray-500 mt-3">${refresh ? "Refreshing…" : "Loading instruments from IQ…"}</div>
+      <div class="text-[10px] text-gray-600 mt-1">${refresh ? "" : "first load takes ~10s"}</div>
+    </div>`;
 
   try {
-    const r = await api("/api/iq/instruments");
+    const url = refresh ? "/api/iq/instruments?refresh=true" : "/api/iq/instruments";
+    const r = await api(url);
     _instrumentsCache = r.instruments || [];
 
     const openItems = _instrumentsCache.filter(i => i.open);
@@ -1005,7 +1024,6 @@ async function renderPairList() {
 
     const groups = {
       forex: "Forex",
-      forex_otc: "Forex OTC (24/7)",
       crypto: "Crypto",
       commodity: "Commodities",
       index: "Indices",
@@ -1014,7 +1032,7 @@ async function renderPairList() {
     };
 
     let html = "";
-    for (const kind of ["forex", "forex_otc", "crypto", "commodity", "index", "stock", "other"]) {
+    for (const kind of ["forex", "crypto", "commodity", "index", "stock", "other"]) {
       const items = openItems.filter(i => i.kind === kind);
       if (!items.length) continue;
       html += `<div class="text-[11px] uppercase tracking-wider text-gray-500 mt-3 mb-1 px-1">${groups[kind]}</div>`;
@@ -1054,13 +1072,17 @@ async function renderPairList() {
   }
 }
 
+async function forceRefreshInstruments() {
+  await renderPairList(true);
+}
+window.forceRefreshInstruments = forceRefreshInstruments;
+
 function renderInstrumentButton(i) {
   let display = i.symbol;
   if (i.symbol.endsWith("OTC")) display = i.symbol.slice(0, -3);
   if (display.length === 6 && /^[A-Z]+$/.test(display)) {
     display = display.slice(0,3) + "/" + display.slice(3);
   }
-  if (i.is_otc) display += " OTC";
 
   const activeSymbol = localStorage.getItem("qt_pair_symbol") || "";
   const isActive = activeSymbol === i.symbol;
@@ -1072,10 +1094,7 @@ function renderInstrumentButton(i) {
 
   return `
     <button onclick="selectPair('${i.symbol}')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl ${isActive ? 'bg-[#1e3a5f] border border-blue-500/40' : 'bg-[#0e141d] border border-[#1f2a3a]'}">
-      <div class="flex items-center gap-2">
-        <span class="text-sm font-medium">${display}</span>
-        ${i.is_otc ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">OTC</span>' : ''}
-      </div>
+      <span class="text-sm font-medium">${display}</span>
       <span class="text-xs font-semibold ${payoutColor}">${payoutText}</span>
     </button>
   `;
@@ -1083,8 +1102,7 @@ function renderInstrumentButton(i) {
 
 function selectPair(symbol) {
   let clean = symbol.toUpperCase();
-  const isOtc = clean.endsWith("OTC");
-  if (isOtc) clean = clean.slice(0, -3);
+  if (clean.endsWith("OTC")) clean = clean.slice(0, -3);
   let pretty = clean;
   if (clean.length === 6 && /^[A-Z]+$/.test(clean)) {
     pretty = clean.slice(0,3) + "/" + clean.slice(3);
@@ -1092,7 +1110,7 @@ function selectPair(symbol) {
   cfg.pair = pretty;
   localStorage.setItem("qt_pair", pretty);
   localStorage.setItem("qt_pair_symbol", symbol);
-  $("currentPair").textContent = pretty + (isOtc ? " OTC" : "");
+  $("currentPair").textContent = pretty;
   window._chartFitted = false;
   closeModal("watchlist");
 
@@ -1334,7 +1352,7 @@ async function placeTrade(dir) {
     console.error("TRADE FAILED:", e);
     let msg = e.message;
     if (/not available/i.test(msg)) {
-      msg = `${rawSymbol} not tradeable — try an OTC pair or different duration`;
+      msg = `${rawSymbol} not tradeable — try a different pair or duration`;
     }
     toast(msg, "err");
   } finally {
@@ -1563,13 +1581,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadTrades();
   loadPayout();
   state.signalsTimer = setInterval(loadSignals, 10000);
-  setInterval(pollCandles, 5000);
+  setInterval(pollCandles, 12000);
   setInterval(loadTrades, 8000);
   setInterval(loadPayout, 30000);
 
-  // Session watcher — every 12s, re-sync with the backend's live session.
-  // Handles the case where the backend restarted and reconnected to IQ,
-  // or lost the session entirely.
+  // Session watcher
   setInterval(async () => {
     try {
       const r = await api("/api/iq/current");
